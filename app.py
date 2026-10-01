@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+import io
 
 st.set_page_config(page_title="샐러드 생산일보 원료코드 대조", layout="wide")
 
 st.title("🥗 샐러드 생산일보 & 매입자료 대조 프로그램")
 
-# 파일 업로드 화면 구성
+# 파일 업로드 영역
 col1, col2 = st.columns(2)
 with col1:
     excel_file = st.file_uploader("1. 샐러드 생산일보 (Excel) 업로드", type=["xlsx", "xls"])
@@ -13,21 +14,12 @@ with col2:
     csv_file = st.file_uploader("2. 원료 매입리스트 (CSV) 업로드", type=["csv"])
 
 def generate_salad_report(excel_file, csv_file):
-    # 공급업체 코드 매핑
-    vendor_map = {
-        '한스': 'K01', '승승장구': 'S01', '에이지': 'A01',
-        '에이지로지스틱스': 'A01', '에상스팜': 'H02', '구름': 'G01'
-    }
-    
-    # 품목 접두사 매핑
     prefix_map = {
         '양상추': 'X', '양배추': 'O', '적채': 'A', '프릴': 'F', '프릴아이스': 'F'
     }
 
-    # CSV 불러오기
     df_csv = pd.read_csv(csv_file)
     
-    # Excel 불러오기
     xls = pd.ExcelFile(excel_file)
     exclude_sheets = ['26.09', '테스트', '원가', 'Sheet1']
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets]
@@ -65,12 +57,9 @@ def generate_salad_report(excel_file, csv_file):
         
         if item in ['양상추', '양배추', '적채']:
             v_code = "K01"
-            if lot == '2026.09.06':
-                matched_date = '260905'
-            elif lot == '2026.09.11':
-                matched_date = '260910'
-            else:
-                matched_date = yymmdd_worklog
+            if lot == '2026.09.06': matched_date = '260905'
+            elif lot == '2026.09.11': matched_date = '260910'
+            else: matched_date = yymmdd_worklog
         elif item in ['프릴', '프릴아이스']:
             if '09.01' in lot: v_code = "A01"; matched_date = '260901'
             elif '09.07' in lot: v_code = "S01"; matched_date = '260907'
@@ -92,13 +81,54 @@ def generate_salad_report(excel_file, csv_file):
     final_cols = ['생산일자', '품목', '작업일지 기준 코드', '매입자료 기준 코드', '일치여부', '준비 양 (kg)', '실투입 양 (kg)']
     return df_report[final_cols]
 
-# 두 파일이 모두 업로드되었을 때 실행
+# 두 파일이 업로드된 경우
 if excel_file is not None and csv_file is not None:
     try:
         df_result = generate_salad_report(excel_file, csv_file)
-        st.success("대조가 완료되었습니다!")
+        st.success("✅ 대조가 완료되었습니다!")
+        
+        # 1. 화면에 표 표시
         st.dataframe(df_result, use_container_width=True)
+        
+        # 엑셀 버퍼 변환
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_result.to_excel(writer, index=False, sheet_name='원료코드_대조표')
+        buffer.seek(0)
+        
+        # 2. 다운로드 및 출력 버튼 배치
+        btn_col1, btn_col2 = st.columns([1, 1])
+        
+        with btn_col1:
+            st.download_button(
+                label="📥 엑셀 파일 다운로드 (.xlsx)",
+                data=buffer,
+                file_name="원료코드_비교_정리표.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        with btn_col2:
+            # 브라우저 인쇄 버튼 (클릭 시 바로 인쇄 창 표시)
+            st.components.v1.html(
+                """
+                <button onclick="window.parent.print()" style="
+                    background-color: #4CAF50;
+                    border: none;
+                    color: white;
+                    padding: 9px 18px;
+                    text-align: center;
+                    text-decoration: none;
+                    display: inline-block;
+                    font-size: 14px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    width: 100%;
+                ">🖨️ 이 페이지 바로 인쇄하기</button>
+                """,
+                height=50
+            )
+
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
 else:
-    st.info("👆 두 개의 파일을 모두 업로드해주세요.")
+    st.info("👆 두 개의 파일을 모두 업로드해주시면 대조표와 다운로드/인쇄 버튼이 나타납니다.")
