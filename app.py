@@ -4,6 +4,41 @@ import io
 
 st.set_page_config(page_title="샐러드 생산일보 원료코드 대조", layout="wide")
 
+# 1. 인쇄 전용 CSS 및 버튼 디자인 통일 스타일
+st.markdown("""
+    <style>
+    /* 인쇄 시 불필요한 UI(파일 업로드 영역, 버튼, 메뉴 등) 숨기기 */
+    @media print {
+        header, footer, .stFileUploader, button, iframe, [data-testid="stHeader"] {
+            display: none !important;
+        }
+        body, .main, .block-container {
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+        }
+        .stDataFrame {
+            width: 100% !important;
+        }
+    }
+    
+    /* Streamlit 다운로드 버튼 너비 및 높이 맞춤 */
+    div.stDownloadButton > button {
+        width: 100% !important;
+        height: 48px !important;
+        font-size: 16px !important;
+        font-weight: bold !important;
+        background-color: #2E7D32 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
+    }
+    div.stDownloadButton > button:hover {
+        background-color: #1B5E20 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 st.title("🥗 샐러드 생산일보 & 매입자료 대조 프로그램")
 
 # 파일 업로드 영역
@@ -87,7 +122,7 @@ if excel_file is not None and csv_file is not None:
         df_result = generate_salad_report(excel_file, csv_file)
         st.success("✅ 대조가 완료되었습니다!")
         
-        # 1. 화면에 표 표시
+        # 1. 대조 결과 표 표시
         st.dataframe(df_result, use_container_width=True)
         
         # 엑셀 버퍼 변환
@@ -96,39 +131,37 @@ if excel_file is not None and csv_file is not None:
             df_result.to_excel(writer, index=False, sheet_name='원료코드_대조표')
         buffer.seek(0)
         
-        # 2. 다운로드 및 출력 버튼 배치
-        btn_col1, btn_col2 = st.columns([1, 1])
+        # 2. 버튼 나란히 수평 배치 (1:1 비율)
+        btn_col1, btn_col2 = st.columns(2)
         
         with btn_col1:
             st.download_button(
                 label="📥 엑셀 파일 다운로드 (.xlsx)",
                 data=buffer,
                 file_name="원료코드_비교_정리표.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
             
         with btn_col2:
-            # 브라우저 인쇄 버튼 (클릭 시 바로 인쇄 창 표시)
             st.components.v1.html(
                 """
                 <button onclick="window.parent.print()" style="
-                    background-color: #4CAF50;
-                    border: none;
+                    width: 100%;
+                    height: 48px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    background-color: #2E7D32;
                     color: white;
-                    padding: 9px 18px;
-                    text-align: center;
-                    text-decoration: none;
-                    display: inline-block;
-                    font-size: 14px;
+                    border: none;
                     border-radius: 8px;
                     cursor: pointer;
-                    width: 100%;
                 ">🖨️ 이 페이지 바로 인쇄하기</button>
                 """,
-                height=50
+                height=55
             )
 
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
 else:
-    st.info("👆 두 개의 파일을 모두 업로드해주시면 대조표와 다운로드/인쇄 버튼이 나타납니다.")
+    st.info("👆 두 개의 파일을 모두 업로드해주시면 대조표와 버튼이 표시됩니다.")
