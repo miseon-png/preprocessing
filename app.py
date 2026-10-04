@@ -68,7 +68,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🥗 샐러드 생산일보 & 매입자료 대조 프로그램")
 
 col1, col2 = st.columns(2)
 with col1:
