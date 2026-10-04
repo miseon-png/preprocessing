@@ -179,7 +179,6 @@ def generate_salad_report(excel_file, csv_file):
       "실투입 양 (kg)",
   ]]
 
-
 if excel_file is not None and csv_file is not None:
   try:
     df_result = generate_salad_report(excel_file, csv_file)
