@@ -81,7 +81,7 @@ with col2:
 def generate_salad_report(excel_file, csv_file):
   prefix_map = {
       "양상추": "X",
-      "양배추": "O",
+      "양배추": "D",
       "적채": "A",
       "프릴": "F",
       "프릴아이스": "F",
