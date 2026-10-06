@@ -95,9 +95,8 @@ def generate_salad_report(excel_file, csv_file):
     def normalize_date(val):
         if pd.isna(val):
             return ""
-        # 텍스트 내 숫자를 모두 추출
         digits = re.sub(r"\D", "", str(val))
-        if len(digits) >= 8:    # 20260909... -> 260909
+        if len(digits) >= 8:    # 20260909 -> 260909
             return digits[2:8]
         elif len(digits) == 6:  # 260909
             return digits
@@ -112,7 +111,7 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
-        # header=None 옵션으로 1행부터 iloc[0]으로 정확히 고정
+        # header=None으로 엑셀의 첫 번째 행부터 iloc[0]으로 정확 고정
         df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
         
         prod_date = df_s.iloc[0, 0]  # A1 생산일자
@@ -139,7 +138,6 @@ def generate_salad_report(excel_file, csv_file):
             if pd.isna(item) or str(item).strip() == "":
                 continue
             
-            # 셀 병합 또는 값 정제
             str_item = str(item).strip()
             str_lot = str(lot).strip() if pd.notna(lot) and str(lot).strip() != "nan" else ""
 
@@ -207,35 +205,4 @@ def generate_salad_report(excel_file, csv_file):
         df_report.apply(process_codes, axis=1)
     )
 
-    return df_report[[
-        "생산일자",
-        "품목",
-        "작업일지 기준 코드",
-        "매입자료 기준 코드",
-        "일치여부",
-        "준비 양 (kg)",
-        "실투입 양 (kg)",
-    ]]
-
-
-if excel_file is not None and csv_file is not None:
-    try:
-        df_result = generate_salad_report(excel_file, csv_file)
-        st.success("✅ 대조가 완료되었습니다!")
-
-        st.dataframe(df_result, use_container_width=True)
-
-        html_table = df_result.to_html(classes="print-table", index=False)
-        st.markdown(
-            f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>',
-            unsafe_allow_html=True,
-        )
-
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
-        b64_excel = base64.b64encode(buffer.getvalue()).decode()
-
-        button_html = f"""
-            <div style="display: flex; gap: 16px; width: 100%; margin-top: 8px;">
-                <a href="
+    return
