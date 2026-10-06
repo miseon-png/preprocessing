@@ -1,12 +1,13 @@
 import base64
 import io
 import re
+import traceback
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="샐러드 생산일보 원료코드 대조", layout="wide")
 
-# 1. 인쇄 및 공통 스타일 설정 (강제 흰색 배경 & 검은색 글씨 적용)
+# 1. 인쇄 및 공통 스타일 설정
 st.markdown(
     """
     <style>
@@ -55,7 +56,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 col1, col2 = st.columns(2)
 with col1:
     excel_file = st.file_uploader(
@@ -66,7 +66,6 @@ with col2:
 
 
 def generate_salad_report(excel_file, csv_file):
-    # 품목별 코드 접두사
     prefix_map = {
         "양상추": "X",
         "양배추": "D",
@@ -75,30 +74,32 @@ def generate_salad_report(excel_file, csv_file):
         "프릴아이스": "F",
     }
 
-    # 거래처별 공급업체 코드
     vendor_code_map = {
         "승승장구": "S01",
         "애상스팜": "H02",
         "한스": "K01",
     }
 
-    # CSV 매입 데이터 읽기 및 컬럼 정리
-    df_csv = pd.read_csv(csv_file)
+    # CSV 데이터 읽기 (인코딩 대응)
+    try:
+        df_csv = pd.read_csv(csv_file, encoding="utf-8")
+    except UnicodeDecodeError:
+        csv_file.seek(0)
+        df_csv = pd.read_csv(csv_file, encoding="cp949")
+
     df_csv.columns = [str(col).strip() for col in df_csv.columns]
 
-    # 주요 컬럼 자동 감지
     date_col = next((c for c in df_csv.columns if "일자" in c or "날짜" in c), None)
     item_col = next((c for c in df_csv.columns if "품목" in c or "원재료" in c or "품명" in c), None)
     vendor_col = next((c for c in df_csv.columns if "거래처" in c or "공급" in c or "매입처" in c), None)
 
-    # 날짜 표준화 함수 (YYMMDD)
     def normalize_date(val):
         if pd.isna(val):
             return ""
         digits = re.sub(r"\D", "", str(val))
-        if len(digits) >= 8:    # 20260909 -> 260909
+        if len(digits) >= 8:
             return digits[2:8]
-        elif len(digits) == 6:  # 260909
+        elif len(digits) == 6:
             return digits
         return digits
 
@@ -111,43 +112,52 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
-        # header=None으로 엑셀의 첫 번째 행부터 iloc[0]으로 정확 고정
         df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
-        
-        prod_date = df_s.iloc[0, 0]  # A1 생산일자
 
-        # -------------------------------------------------------------
-        # 헤더 보정 반영 좌표 (0-based index)
-        # 2행(iloc[1]): 품목명
-        # 3행(iloc[2]): 롯트 번호
-        # 4행(iloc[3]): 준비양
-        # 6행(iloc[5]): 실투입양
-        # -------------------------------------------------------------
+        # 최소 필요 행/열 크기 확인
+        if df_s.shape[0] < 6 or df_s.shape[1] < 15:
+            continue
+
+        prod_date = df_s.iloc[0, 0]
+
+        # 안전한 셀 값 추출 함수
+        def safe_get(r, c):
+            val = df_s.iloc[r, c]
+            return val if pd.notna(val) else ""
+
+        def safe_num(r, c):
+            val = df_s.iloc[r, c]
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return 0.0
+
+        # 품목/롯트/준비양/실투입양 추출 (좌표 매핑)
         items_config = [
-            # 양상추: E2, F3, E4, E6
-            (df_s.iloc[1, 4], df_s.iloc[2, 5], df_s.iloc[3, 4], df_s.iloc[5, 4]),
-            # 양배추: H2, I3, H4, H6
-            (df_s.iloc[1, 7], df_s.iloc[2, 8], df_s.iloc[3, 7], df_s.iloc[5, 7]),
-            # 적채: K2, L3, K4, K6
-            (df_s.iloc[1, 10], df_s.iloc[2, 11], df_s.iloc[3, 10], df_s.iloc[5, 10]),
-            # 프릴: N2, O3, N4, N6
-            (df_s.iloc[1, 13], df_s.iloc[2, 14], df_s.iloc[3, 13], df_s.iloc[5, 13]),
+            (safe_get(1, 4), safe_get(2, 5), safe_num(3, 4), safe_num(5, 4)),   # 양상추 (E2, F3, E4, E6)
+            (safe_get(1, 7), safe_get(2, 8), safe_num(3, 7), safe_num(5, 7)),   # 양배추 (H2, I3, H4, H6)
+            (safe_get(1, 10), safe_get(2, 11), safe_num(3, 10), safe_num(5, 10)),# 적채 (K2, L3, K4, K6)
+            (safe_get(1, 13), safe_get(2, 14), safe_num(3, 13), safe_num(5, 13)),# 프릴 (N2, O3, N4, N6)
         ]
 
         for item, lot, prep, act in items_config:
-            if pd.isna(item) or str(item).strip() == "":
-                continue
-            
             str_item = str(item).strip()
-            str_lot = str(lot).strip() if pd.notna(lot) and str(lot).strip() != "nan" else ""
+            if not str_item or str_item == "nan":
+                continue
+
+            str_lot = str(lot).strip() if str(lot).strip() != "nan" else ""
 
             records.append({
                 "생산일자": prod_date,
                 "품목": str_item,
                 "작업일지_롯트": str_lot,
-                "준비 양 (kg)": round(prep / 1000, 1) if pd.notna(prep) and isinstance(prep, (int, float)) else 0.0,
-                "실투입 양 (kg)": round(act / 1000, 1) if pd.notna(act) and isinstance(act, (int, float)) else 0.0,
+                "준비 양 (kg)": round(prep / 1000, 1),
+                "실투입 양 (kg)": round(act / 1000, 1),
             })
+
+    if not records:
+        st.warning("⚠️ 엑셀 파일에서 대조할 데이터를 찾지 못했습니다. 시트 레이아웃을 확인해주세요.")
+        return pd.DataFrame()
 
     df_report = pd.DataFrame(records)
 
@@ -155,54 +165,25 @@ def generate_salad_report(excel_file, csv_file):
         item = row["품목"]
         lot = row["작업일지_롯트"]
 
-        # '프릴'은 매입 데이터의 '프릴아이스'로 동일 매칭
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
 
-        # 작업일지 롯트 날짜 (YYMMDD)
         worklog_date = normalize_date(lot)
 
-        # 작업일지 기준 기본 거래처 추정
-        default_vcode = "K01"  # 기본 한스
+        default_vcode = "K01"
         if "프릴" in item:
             if any(k in lot for k in ["09.01", "09.11", "09.19"]):
-                default_vcode = "H02"  # 애상스팜
+                default_vcode = "H02"
             elif any(k in lot for k in ["09.07", "09.09", "09.12", "09.16", "09.17"]):
-                default_vcode = "S01"  # 승승장구
+                default_vcode = "S01"
 
         code_worklog = f"{p}{worklog_date}-{default_vcode}" if worklog_date else "롯트미입력"
-
-        # CSV 매입 데이터와 실제 대조
         code_purchase = "매입내역없음"
 
         if date_col and item_col and vendor_col and worklog_date:
-            # 품목 및 롯트 날짜 기준 매입 내역 검색
             matched_rows = df_csv[
                 (df_csv[item_col].astype(str).str.strip().isin([item, lookup_item])) &
                 (df_csv["_norm_date"] == worklog_date)
             ]
 
-            # 예외 롯트 날짜 보정 재검색 (9월 12일 롯트 -> 9월 9일 입고분)
-            if matched_rows.empty and "0912" in worklog_date:
-                matched_rows = df_csv[
-                    (df_csv[item_col].astype(str).str.strip().isin([item, lookup_item])) &
-                    (df_csv["_norm_date"] == "260909")
-                ]
-
-            # 매입 내역이 실제로 확인된 경우
-            if not matched_rows.empty:
-                vendor_name = str(matched_rows.iloc[0][vendor_col]).strip()
-                matched_vcode = vendor_code_map.get(vendor_name, "K01")
-                matched_date = matched_rows.iloc[0]["_norm_date"]
-                code_purchase = f"{p}{matched_date}-{matched_vcode}"
-
-        # 일치여부 최종 검증
-        is_match = "일치" if code_worklog == code_purchase and code_worklog != "롯트미입력" else "불일치"
-
-        return pd.Series([code_worklog, code_purchase, is_match])
-
-    df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
-        df_report.apply(process_codes, axis=1)
-    )
-
-    return
+            if matched_rows.empty and "0912" in
