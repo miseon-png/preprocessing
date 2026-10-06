@@ -92,8 +92,8 @@ def generate_salad_report(excel_file, csv_file):
         # -----------------------------------------------------------------
         items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]      # E2, H2, K2, N2 (품목명)
         lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]       # F3, I3, L3, O3 (롯트)
-        prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]   # E4, H4, K4, N4 (준비양(후))
-        actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]] # E6, H6, K6, N6 (실투입(전))
+        prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]   # E4, H4, K4, N4 (준비양)
+        actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]] # E6, H6, K6, N6 (실투입)
 
         for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
             if pd.isna(item) or str(item).strip() == "" or str(item).strip() == "nan":
@@ -175,8 +175,8 @@ def generate_salad_report(excel_file, csv_file):
         "작업일지 기준 코드",
         "매입자료 기준 코드",
         "일치여부",
-        "준비 양 (kg)",
-        "실투입 양 (kg)",
+        "준비(후) 양 (kg)",
+        "투입(전) 양 (kg)",
     ]]
 
 
