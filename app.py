@@ -175,8 +175,8 @@ def generate_salad_report(excel_file, csv_file):
         "작업일지 기준 코드",
         "매입자료 기준 코드",
         "일치여부",
-        "준비(후) 양 (kg)",
-        "투입(전) 양 (kg)",
+        "준비 양 (kg)",
+        "투입 양 (kg)",
     ]]
 
 
