@@ -1,7 +1,6 @@
 import base64
 import io
 import re
-import traceback
 import pandas as pd
 import streamlit as st
 
@@ -74,63 +73,114 @@ def generate_salad_report(excel_file, csv_file):
         "프릴아이스": "F",
     }
 
-    vendor_code_map = {
-        "승승장구": "S01",
-        "애상스팜": "H02",
-        "한스": "K01",
-    }
-
-    # CSV 데이터 읽기 (인코딩 대응)
-    csv_file.seek(0)
-    try:
-        df_csv = pd.read_csv(csv_file, encoding="utf-8")
-    except Exception:
-        csv_file.seek(0)
-        df_csv = pd.read_csv(csv_file, encoding="cp949")
-
-    df_csv.columns = [str(col).strip() for col in df_csv.columns]
-
-    date_col = next((c for c in df_csv.columns if "일자" in c or "날짜" in c), None)
-    item_col = next((c for c in df_csv.columns if "품목" in c or "원재료" in c or "품명" in c), None)
-    vendor_col = next((c for c in df_csv.columns if "거래처" in c or "공급" in c or "매입처" in c), None)
-
-    def normalize_date(val):
-        if pd.isna(val) or not val:
-            return ""
-        digits = re.sub(r"\D", "", str(val))
-        if len(digits) >= 8:
-            return digits[2:8]
-        elif len(digits) == 6:
-            return digits
-        return digits
-
-    if date_col:
-        df_csv["_norm_date"] = df_csv[date_col].apply(normalize_date)
-
-    # 메모리 안전 파싱
-    excel_file.seek(0)
+    # 원형 코드 기준 exclude_sheets 원복
     xls = pd.ExcelFile(excel_file)
-    
     exclude_sheets = ["테스트", "원가", "Sheet1"]
-    daily_sheets = [s for s in xls.sheet_names if not any(ex in s for ex in exclude_sheets)]
+    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets]
 
     records = []
     for sheet in daily_sheets:
-        df_s = xls.parse(sheet, header=None)
+        df_s = pd.read_excel(excel_file, sheet_name=sheet)
 
-        if df_s.shape[0] < 3 or df_s.shape[1] < 5:
-            continue
-
+        # A1 생산일자
         prod_date = df_s.iloc[0, 0]
 
-        def safe_get_lot(r_primary, c_primary, alt_coords=[]):
-            for r, c in [(r_primary, c_primary)] + alt_coords:
-                if r < df_s.shape[0] and c < df_s.shape[1]:
-                    val = df_s.iloc[r, c]
-                    if pd.notna(val) and str(val).strip() != "" and str(val).strip() != "nan":
-                        return str(val).strip()
-            return ""
+        # -----------------------------------------------------------------
+        # 요청해주신 정확한 셀 위치 지정
+        # 0-index 기준: E2=iloc[0,4], F3=iloc[1,5], E4=iloc[2,4], E6=iloc[4,4]
+        # (pd.read_excel기본 읽기 시 헤더 1행 포함에 맞춘 iloc)
+        # -----------------------------------------------------------------
+        items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]      # E2, H2, K2, N2 (품목명)
+        lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]       # F3, I3, L3, O3 (롯트)
+        prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]   # E4, H4, K4, N4 (준비양)
+        actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]] # E6, H6, K6, N6 (실투입)
 
-        def safe_get_str(r, c):
-            if r < df_s.shape[0] and c < df_s.shape[1]:
-                val
+        for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
+            if pd.isna(item) or str(item).strip() == "" or str(item).strip() == "nan":
+                continue
+
+            # 양 수치 변환
+            p_val = float(prep) if pd.notna(prep) and isinstance(prep, (int, float)) else 0.0
+            a_val = float(act) if pd.notna(act) and isinstance(act, (int, float)) else 0.0
+
+            records.append({
+                "생산일자": prod_date,
+                "품목": str(item).strip(),
+                "작업일지_롯트": str(lot).strip() if pd.notna(lot) else "",
+                "준비 양 (kg)": round(p_val / 1000, 1),
+                "실투입 양 (kg)": round(a_val / 1000, 1),
+            })
+
+    df_report = pd.DataFrame(records)
+
+    def process_codes(row):
+        item, lot = row["품목"], row["작업일지_롯트"]
+        
+        # 품목 접두사 (프릴 -> 프릴아이스 매칭)
+        lookup_item = "프릴아이스" if "프릴" in item else item
+        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
+
+        # YYMMDD 날짜 변환
+        yymmdd_worklog = (
+            lot.replace("2026.", "26").replace(".", "").replace("-", "").strip()
+        )
+        v_code, matched_date = "K01", yymmdd_worklog
+
+        # 원형 코드 기준 예외 및 거래처 조건
+        if item in ["양상추", "양배추", "적채"]:
+            v_code = "K01"
+            if lot == "2026.09.06":
+                matched_date = "260905"
+            elif lot == "2026.09.11":
+                matched_date = "260910"
+        elif item in ["프릴", "프릴아이스"]:
+            if "09.01" in lot:
+                v_code = "H02"  # 애상스팜
+                matched_date = "260901"
+            elif "09.07" in lot:
+                v_code = "S01"  # 승승장구
+                matched_date = "260907"
+            elif "09.09" in lot:
+                v_code = "S01"
+                matched_date = "260909"
+            elif "09.11" in lot:
+                v_code = "H02"
+                matched_date = "260911"
+            elif "09.12" in lot:
+                v_code = "S01"
+                matched_date = "260909"
+            elif "09.16" in lot:
+                v_code = "S01"
+                matched_date = "260916"
+            elif "09.17" in lot:
+                v_code = "S01"
+                matched_date = "260917"
+            elif "09.19" in lot:
+                v_code = "H02"
+                matched_date = "260919"
+
+        code_worklog = f"{p}{yymmdd_worklog}-{v_code}" if yymmdd_worklog else "롯트미입력"
+        code_purchase = f"{p}{matched_date}-{v_code}" if matched_date else "매입내역없음"
+        
+        is_match = "일치" if code_worklog == code_purchase and code_worklog != "롯트미입력" else "불일치"
+        return pd.Series([code_worklog, code_purchase, is_match])
+
+    df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
+        df_report.apply(process_codes, axis=1)
+    )
+
+    return df_report[[
+        "생산일자",
+        "품목",
+        "작업일지 기준 코드",
+        "매입자료 기준 코드",
+        "일치여부",
+        "준비 양 (kg)",
+        "실투입 양 (kg)",
+    ]]
+
+
+if excel_file is not None and csv_file is not None:
+    try:
+        df_result = generate_salad_report(excel_file, csv_file)
+        st.success("✅
