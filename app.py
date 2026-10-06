@@ -147,19 +147,7 @@ def generate_salad_report(excel_file, csv_file):
                     return 0.0
             return 0.0
 
-        # 품목/롯트/준비양/실투입양 (E2/F3/E4/E6, H2/I3/H4/H6 등)
         items_config = [
             (safe_get_str(1, 4), safe_get_lot(2, 5, [(1, 5), (3, 5)]), safe_num(3, 4), safe_num(5, 4)),
             (safe_get_str(1, 7), safe_get_lot(2, 8, [(1, 8), (3, 8)]), safe_num(3, 7), safe_num(5, 7)),
-            (safe_get_str(1, 10), safe_get_lot(2, 11, [(1, 11), (3, 11)]), safe_num(3, 10), safe_num(5, 10)),
-            (safe_get_str(1, 13), safe_get_lot(2, 14, [(1, 14), (3, 14)]), safe_num(3, 13), safe_num(5, 13)),
-        ]
-
-        for item, lot, prep, act in items_config:
-            if not item or item.lower() == "nan":
-                continue
-
-            records.append({
-                "생산일자": prod_date,
-                "품목": item,
-                "작업
+            (safe_get_str(1, 10), safe_get_lot(2,
