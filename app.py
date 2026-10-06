@@ -80,7 +80,7 @@ def generate_salad_report(excel_file, csv_file):
         "한스": "K01",
     }
 
-    # CSV 데이터 안전하게 읽기 (인코딩 처리)
+    # CSV 데이터 안전 읽기 (인코딩 대응)
     csv_file.seek(0)
     try:
         df_csv = pd.read_csv(csv_file, encoding="utf-8")
@@ -107,7 +107,7 @@ def generate_salad_report(excel_file, csv_file):
     if date_col:
         df_csv["_norm_date"] = df_csv[date_col].apply(normalize_date)
 
-    # Streamlit 파일 객체 안전 읽기 (xls.parse 사용)
+    # Streamlit 메모리 안전 파싱
     excel_file.seek(0)
     xls = pd.ExcelFile(excel_file)
     
@@ -116,7 +116,6 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
-        # file uploader 버그 방지를 위해 xls.parse() 사용
         df_s = xls.parse(sheet, header=None)
 
         if df_s.shape[0] < 3 or df_s.shape[1] < 5:
@@ -148,7 +147,7 @@ def generate_salad_report(excel_file, csv_file):
                     return 0.0
             return 0.0
 
-        # 좌표 매핑 (E2, F3, E4, E6 / H2, I3, H4, H6 등)
+        # 품목/롯트/준비양/실투입양 (E2/F3/E4/E6, H2/I3/H4/H6 등)
         items_config = [
             (safe_get_str(1, 4), safe_get_lot(2, 5, [(1, 5), (3, 5)]), safe_num(3, 4), safe_num(5, 4)),
             (safe_get_str(1, 7), safe_get_lot(2, 8, [(1, 8), (3, 8)]), safe_num(3, 7), safe_num(5, 7)),
@@ -163,57 +162,4 @@ def generate_salad_report(excel_file, csv_file):
             records.append({
                 "생산일자": prod_date,
                 "품목": item,
-                "작업일지_롯트": lot,
-                "준비 양 (kg)": round(prep / 1000, 1),
-                "실투입 양 (kg)": round(act / 1000, 1),
-            })
-
-    if not records:
-        st.error("❌ 엑셀 파일 시트에서 대조할 데이터를 불러오지 못했습니다.")
-        return pd.DataFrame()
-
-    df_report = pd.DataFrame(records)
-
-    def process_codes(row):
-        item = row["품목"]
-        lot = row["작업일지_롯트"]
-
-        lookup_item = "프릴아이스" if "프릴" in item else item
-        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
-
-        worklog_date = normalize_date(lot)
-
-        default_vcode = "K01"
-        if "프릴" in item:
-            if any(k in lot for k in ["09.01", "09.11", "09.19"]):
-                default_vcode = "H02"
-            elif any(k in lot for k in ["09.07", "09.09", "09.12", "09.16", "09.17"]):
-                default_vcode = "S01"
-
-        code_worklog = f"{p}{worklog_date}-{default_vcode}" if worklog_date else "롯트미입력"
-        code_purchase = "매입내역없음"
-
-        if date_col and item_col and vendor_col and worklog_date:
-            matched_rows = df_csv[
-                (df_csv[item_col].astype(str).str.strip().isin([item, lookup_item])) &
-                (df_csv["_norm_date"] == worklog_date)
-            ]
-
-            if matched_rows.empty and "0912" in worklog_date:
-                matched_rows = df_csv[
-                    (df_csv[item_col].astype(str).str.strip().isin([item, lookup_item])) &
-                    (df_csv["_norm_date"] == "260909")
-                ]
-
-            if not matched_rows.empty:
-                vendor_name = str(matched_rows.iloc[0][vendor_col]).strip()
-                matched_vcode = vendor_code_map.get(vendor_name, "K01")
-                matched_date = matched_rows.iloc[0]["_norm_date"]
-                code_purchase = f"{p}{matched_date}-{matched_vcode}"
-
-        is_match = "일치" if code_worklog == code_purchase and code_worklog != "롯트미입력" else "불일치"
-
-        return pd.Series([code_worklog, code_purchase, is_match])
-
-    df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
-        df_report
+                "작업
