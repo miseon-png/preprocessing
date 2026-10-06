@@ -95,9 +95,10 @@ def generate_salad_report(excel_file, csv_file):
     def normalize_date(val):
         if pd.isna(val):
             return ""
+        # 텍스트 내 숫자를 모두 추출
         digits = re.sub(r"\D", "", str(val))
-        if len(digits) == 8:    # 20260909 -> 260909
-            return digits[2:]
+        if len(digits) >= 8:    # 20260909... -> 260909
+            return digits[2:8]
         elif len(digits) == 6:  # 260909
             return digits
         return digits
@@ -111,12 +112,17 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
-        df_s = pd.read_excel(excel_file, sheet_name=sheet)
-        prod_date = df_s.iloc[0, 0]  # 생산일자
+        # header=None 옵션으로 1행부터 iloc[0]으로 정확히 고정
+        df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+        
+        prod_date = df_s.iloc[0, 0]  # A1 생산일자
 
         # -------------------------------------------------------------
-        # 품목별 좌표 매핑 (0-based index)
-        # 2행(1): 품목명 / 3행(2): 롯트 / 4행(3): 준비양 / 6행(5): 실투입양
+        # 헤더 보정 반영 좌표 (0-based index)
+        # 2행(iloc[1]): 품목명
+        # 3행(iloc[2]): 롯트 번호
+        # 4행(iloc[3]): 준비양
+        # 6행(iloc[5]): 실투입양
         # -------------------------------------------------------------
         items_config = [
             # 양상추: E2, F3, E4, E6
@@ -132,10 +138,15 @@ def generate_salad_report(excel_file, csv_file):
         for item, lot, prep, act in items_config:
             if pd.isna(item) or str(item).strip() == "":
                 continue
+            
+            # 셀 병합 또는 값 정제
+            str_item = str(item).strip()
+            str_lot = str(lot).strip() if pd.notna(lot) and str(lot).strip() != "nan" else ""
+
             records.append({
                 "생산일자": prod_date,
-                "품목": str(item).strip(),
-                "작업일지_롯트": str(lot).strip() if pd.notna(lot) else "",
+                "품목": str_item,
+                "작업일지_롯트": str_lot,
                 "준비 양 (kg)": round(prep / 1000, 1) if pd.notna(prep) and isinstance(prep, (int, float)) else 0.0,
                 "실투입 양 (kg)": round(act / 1000, 1) if pd.notna(act) and isinstance(act, (int, float)) else 0.0,
             })
@@ -227,45 +238,4 @@ if excel_file is not None and csv_file is not None:
 
         button_html = f"""
             <div style="display: flex; gap: 16px; width: 100%; margin-top: 8px;">
-                <a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_excel}" 
-                   download="원료코드_비교_정리표.xlsx" 
-                   style="
-                       flex: 1;
-                       height: 48px;
-                       background-color: #2E7D32;
-                       color: white;
-                       text-decoration: none;
-                       display: flex;
-                       align-items: center;
-                       justify-content: center;
-                       font-size: 16px;
-                       font-weight: bold;
-                       border-radius: 8px;
-                       box-sizing: border-box;
-                   ">📥 엑셀 파일 다운로드 (.xlsx)</a>
-                <button onclick="window.parent.print()" 
-                        style="
-                            flex: 1;
-                            height: 48px;
-                            background-color: #2E7D32;
-                            color: white;
-                            border: none;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            font-size: 16px;
-                            font-weight: bold;
-                            border-radius: 8px;
-                            cursor: pointer;
-                            box-sizing: border-box;
-                        ">🖨 이 페이지 바로 인쇄하기</button>
-            </div>
-            """
-        st.components.v1.html(button_html, height=65)
-
-    except Exception as e:
-        st.error(f"처리 중 오류가 발생했습니다: {e}")
-else:
-    st.info(
-        "👆 두 개의 파일을 모두 업로드해주시면 대조표와 버튼이 표시됩니다."
-    )
+                <a href="
