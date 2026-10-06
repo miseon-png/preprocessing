@@ -176,7 +176,7 @@ def generate_salad_report(excel_file, csv_file):
         "매입자료 기준 코드",
         "일치여부",
         "준비 양 (kg)",
-        "투입 양 (kg)",
+        "실투입 양 (kg)",
     ]]
 
 
