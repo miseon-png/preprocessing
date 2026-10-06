@@ -183,4 +183,40 @@ def generate_salad_report(excel_file, csv_file):
 if excel_file is not None and csv_file is not None:
     try:
         df_result = generate_salad_report(excel_file, csv_file)
-        st.success("✅
+        st.success("✅ 대조가 완료되었습니다!")
+
+        # 화면 표시용
+        st.dataframe(df_result, use_container_width=True)
+
+        # 인쇄 전용 HTML 표
+        html_table = df_result.to_html(classes="print-table", index=False)
+        st.markdown(
+            f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # 엑셀 다운로드
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
+        b64_excel = base64.b64encode(buffer.getvalue()).decode()
+
+        button_html = (
+            '<div style="display: flex; gap: 16px; width: 100%; margin-top: 8px;">'
+            f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_excel}" '
+            'download="원료코드_비교_정리표.xlsx" '
+            'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; text-decoration: none; '
+            'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
+            'border-radius: 8px; box-sizing: border-box;">📥 엑셀 파일 다운로드 (.xlsx)</a>'
+            '<button onclick="window.parent.print()" '
+            'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; border: none; '
+            'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
+            'border-radius: 8px; cursor: pointer; box-sizing: border-box;">🖨 이 페이지 바로 인쇄하기</button>'
+            '</div>'
+        )
+        st.components.v1.html(button_html, height=65)
+
+    except Exception as e:
+        st.error(f"처리 중 오류가 발생했습니다: {e}")
+else:
+    st.info("👆 두 개의 파일을 모두 업로드해주시면 대조표와 버튼이 표시됩니다.")
