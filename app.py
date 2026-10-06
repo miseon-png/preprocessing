@@ -7,7 +7,7 @@ import streamlit as st
 
 st.set_page_config(page_title="샐러드 생산일보 원료코드 대조", layout="wide")
 
-# 1. 인쇄 및 공통 스타일 설정 (강제 흰색 배경 & 검은색 글씨 적용)
+# 1. 인쇄 및 공통 스타일 설정
 st.markdown(
     """
     <style>
@@ -80,7 +80,7 @@ def generate_salad_report(excel_file, csv_file):
         "한스": "K01",
     }
 
-    # CSV 데이터 읽기 (인코딩 대응)
+    # CSV 파일 읽기
     try:
         df_csv = pd.read_csv(csv_file, encoding="utf-8")
     except UnicodeDecodeError:
@@ -93,8 +93,9 @@ def generate_salad_report(excel_file, csv_file):
     item_col = next((c for c in df_csv.columns if "품목" in c or "원재료" in c or "품명" in c), None)
     vendor_col = next((c for c in df_csv.columns if "거래처" in c or "공급" in c or "매입처" in c), None)
 
+    # 날짜 정규화 함수 (YYMMDD 추출)
     def normalize_date(val):
-        if pd.isna(val):
+        if pd.isna(val) or not val:
             return ""
         digits = re.sub(r"\D", "", str(val))
         if len(digits) >= 8:
@@ -107,18 +108,20 @@ def generate_salad_report(excel_file, csv_file):
         df_csv["_norm_date"] = df_csv[date_col].apply(normalize_date)
 
     xls = pd.ExcelFile(excel_file)
-    exclude_sheets = ["26.09", "테스트", "원가", "Sheet1"]
-    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets]
+    
+    # 예외 시트 명확화 (제외할 전형적인 이름들)
+    exclude_sheets = ["테스트", "원가", "Sheet1"]
+    daily_sheets = [s for s in xls.sheet_names if not any(ex in s for ex in exclude_sheets)]
 
     records = []
     for sheet in daily_sheets:
         df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
 
-        if df_s.shape[0] < 6 or df_s.shape[1] < 15:
+        # 유효 행/열 최소 확인
+        if df_s.shape[0] < 3 or df_s.shape[1] < 5:
             continue
 
         prod_date = df_s.iloc[0, 0]
 
-        def safe_get(r, c):
-            val = df_s.iloc[r, c]
-            return val if pd.notna(val) else ""
+        # 주변 위치 탐색 포함 안전 셀 값 추출
+        def safe_get_lot(r_primary, c_primary
