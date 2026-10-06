@@ -80,7 +80,7 @@ def generate_salad_report(excel_file, csv_file):
         "한스": "K01",
     }
 
-    # CSV 데이터 안전 읽기 (인코딩 대응)
+    # CSV 데이터 읽기 (인코딩 대응)
     csv_file.seek(0)
     try:
         df_csv = pd.read_csv(csv_file, encoding="utf-8")
@@ -107,7 +107,7 @@ def generate_salad_report(excel_file, csv_file):
     if date_col:
         df_csv["_norm_date"] = df_csv[date_col].apply(normalize_date)
 
-    # Streamlit 메모리 안전 파싱
+    # 메모리 안전 파싱
     excel_file.seek(0)
     xls = pd.ExcelFile(excel_file)
     
@@ -133,21 +133,4 @@ def generate_salad_report(excel_file, csv_file):
 
         def safe_get_str(r, c):
             if r < df_s.shape[0] and c < df_s.shape[1]:
-                val = df_s.iloc[r, c]
-                if pd.notna(val):
-                    return str(val).strip()
-            return ""
-
-        def safe_num(r, c):
-            if r < df_s.shape[0] and c < df_s.shape[1]:
-                val = df_s.iloc[r, c]
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return 0.0
-            return 0.0
-
-        items_config = [
-            (safe_get_str(1, 4), safe_get_lot(2, 5, [(1, 5), (3, 5)]), safe_num(3, 4), safe_num(5, 4)),
-            (safe_get_str(1, 7), safe_get_lot(2, 8, [(1, 8), (3, 8)]), safe_num(3, 7), safe_num(5, 7)),
-            (safe_get_str(1, 10), safe_get_lot(2,
+                val
