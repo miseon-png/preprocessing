@@ -147,9 +147,7 @@ def parse_csv_purchase(uploaded_file):
 
 
 def guess_purchase_code(item, prod_date, stock_records, df_csv):
-    """
-    생산일자 기준 매입자료 코드 추측
-    """
+    """생산일자 기준 매입자료 코드 추측"""
     lookup_item = "프릴아이스" if "프릴" in str(item) else str(item).strip()
     p_code = prefix_map.get(lookup_item, "X")
 
@@ -395,6 +393,3 @@ if excel_file is not None:
         st.code(traceback.format_exc())
 else:
     st.info("👆 1. 샐러드 생산일지 엑셀 파일과 2. CSV/Excel 매입 자료를 업로드해주세요.")
-```eof
-
-예외 처리를 보강한 전체 앱 코드를 반영했습니다. 파일 해석 또는 매입 자료 파싱 과정에서 발생하는 오류를 우회하여 대조표가 안정적으로 생성될 것입니다.
