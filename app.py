@@ -68,59 +68,82 @@ prefix_map = {
     "프릴아이스": "F",
 }
 
-
-def load_stock_data(xls):
-    """첫 번째 시트에서 월간 재고 데이터를 읽어옵니다."""
-    stock_sheet_name = xls.sheet_names[0]
-    df_stock = pd.read_excel(xls, sheet_name=stock_sheet_name)
-
-    # 컬럼명이 정형화되어 있지 않은 경우에 대비한 유연한 정제
-    df_stock.dropna(how="all", inplace=True)
-    return df_stock
+# 품목별 첫 시트(재고 시트) 컬럼 인덱스 매핑 (A=0, B=1, D=3, F=5)
+item_col_map = {
+    "양상추": 1,  # B열
+    "양배추": 3,  # D열
+    "적채": 5,    # F열
+}
 
 
-def guess_purchase_code(item, prod_date, df_stock):
-    """첫 번째 시트의 재고 내역을 참조하여 매입자료 기준 코드를 추측합니다."""
-    if df_stock.empty:
-        return "재고시트없음"
+def parse_stock_sheet(xls):
+    """첫 시트(재고)에서 입고일자와 품목별 재고 유무/날짜 리스트 추출"""
+    stock_sheet = xls.sheet_names[0]
+    df_stock = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
+    stock_records = []
+
+    for idx, row in df_stock.iterrows():
+        a_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
+        
+        # '10/05 입고' 또는 '10/05' 형태에서 월/일 추출
+        date_match = re.search(r"(\d{1,2})/(\d{1,2})", a_val)
+        if date_match:
+            mm, dd = date_match.group(1).zfill(2), date_match.group(2).zfill(2)
+            mmdd = f"{mm}{dd}"
+            
+            # 각 품목별 재고 존재 여부 체크
+            row_info = {"mmdd": mmdd}
+            for item_name, col_idx in item_col_map.items():
+                cell_val = row.iloc[col_idx] if col_idx < len(row) else None
+                # 셀이 비어있지 않고 0보다 크거나 문자가 적혀있으면 해당 날짜에 재고 있음으로 판단
+                has_stock = pd.notna(cell_val) and str(cell_val).strip() not in ["", "0", "nan"]
+                row_info[item_name] = has_stock
+
+            stock_records.append(row_info)
+
+    return stock_records
+
+
+def guess_purchase_code(item, prod_date, stock_records):
+    """생산일자 기준 첫 시트 재고에서 입고일자를 찾아 매입코드 추측"""
     lookup_item = "프릴아이스" if "프릴" in str(item) else str(item).strip()
     p_code = prefix_map.get(lookup_item, "X")
 
-    # 재고 시트 내 검색 (품목 컬럼 대조)
-    # 첫 시트에 품목, 입고일, 업체코드/원료코드 항목이 있을 경우 우선 탐색
-    matched_rows = df_stock[
-        df_stock.astype(str)
-        .apply(lambda row: row.str.contains(lookup_item, regex=False))
-        .any(axis=1)
-    ]
+    # 생산일자에서 YYMMDD 및 MMDD 추출
+    clean_pdate = re.sub(r"[^\d]", "", str(prod_date))
+    year_prefix = clean_pdate[2:4] if len(clean_pdate) >= 8 else "26"
+    p_mmdd = clean_pdate[4:8] if len(clean_pdate) >= 8 else ""
 
-    if not matched_rows.empty:
-        # 최근 입고 내역 또는 첫 번째 매칭 재고의 코드 활용
-        first_match = matched_rows.iloc[0]
-        # 재고 시트에 추출할 수 있는 코드 형식이 있는 경우
-        for val in first_match.values:
-            val_str = str(val).strip()
-            if re.match(r"^[A-Z]\d{6}-[A-Z0-9]+$", val_str):
-                return val_str
+    # 재고 기록에서 생산일자 이전(또는 당일) 중 가장 최근 입고된 날짜 탐색
+    matched_mmdd = None
+    if stock_records and lookup_item in item_col_map:
+        # 생산일자 이하인 입고일자 중 가장 마지막(최신) 날짜 추출
+        valid_dates = [
+            r["mmdd"] for r in stock_records 
+            if r.get(lookup_item) and (not p_mmdd or r["mmdd"] <= p_mmdd)
+        ]
+        if valid_dates:
+            matched_mmdd = valid_dates[-1]
 
-    # 재고에서 개별 코드를 추출하지 못한 경우 생산일자 기반 추측 코드 생성 (예: X261017-K01)
-    clean_date = re.sub(r"[^\d]", "", str(prod_date))
-    yymmdd = clean_date[2:8] if len(clean_date) >= 8 else "261001"
-    return f"{p_code}{yymmdd}-추측코드"
+    # 적절한 입고일자를 찾지 못한 경우 생산일자 MMDD 사용
+    if not matched_mmdd:
+        matched_mmdd = p_mmdd if p_mmdd else "1001"
+
+    v_code = "K01"  # 기본 공급업체 코드 (한스)
+    return f"{p_code}{year_prefix}{matched_mmdd}-{v_code}"
 
 
 def generate_salad_report(excel_file):
     xls = pd.ExcelFile(excel_file)
 
-    # 1. 첫 번째 시트: 재고 데이터 로드
-    df_stock = load_stock_data(xls)
+    # 1. 첫 번째 시트: 재고 내역 파싱
+    stock_records = parse_stock_sheet(xls)
 
     # 2. 일자별 생산 시트 순회 (첫 번째 시트 제외)
     exclude_sheets = ["테스트", "원가", "Sheet1"]
     daily_sheets = [
-        s
-        for s in xls.sheet_names[1:]
+        s for s in xls.sheet_names[1:]
         if s not in exclude_sheets and not s.startswith("재고")
     ]
 
@@ -131,51 +154,19 @@ def generate_salad_report(excel_file):
         # 생산일자 (A1)
         prod_date = df_s.iloc[0, 0]
 
-        items = [
-            df_s.iloc[0, 4],
-            df_s.iloc[0, 7],
-            df_s.iloc[0, 10],
-            df_s.iloc[0, 13],
-        ]  # E2, H2, K2, N2
-        lots = [
-            df_s.iloc[1, 5],
-            df_s.iloc[1, 8],
-            df_s.iloc[1, 11],
-            df_s.iloc[1, 14],
-        ]  # F3, I3, L3, O3
-        prep_pck = [
-            df_s.iloc[2, 4],
-            df_s.iloc[2, 7],
-            df_s.iloc[2, 10],
-            df_s.iloc[2, 13],
-        ]  # E4, H4, K4, N4
-        actual_input = [
-            df_s.iloc[4, 4],
-            df_s.iloc[4, 7],
-            df_s.iloc[4, 10],
-            df_s.iloc[4, 13],
-        ]  # E6, H6, K6, N6
+        items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]  # E2, H2, K2, N2
+        lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]   # F3, I3, L3, O3
+        prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]] # E4, H4, K4, N4
+        actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]] # E6, H6, K6, N6
 
         for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
-            if (
-                pd.isna(item)
-                or str(item).strip() == ""
-                or str(item).strip() == "nan"
-            ):
+            if pd.isna(item) or str(item).strip() == "" or str(item).strip() == "nan":
                 continue
 
-            p_val = (
-                float(prep)
-                if pd.notna(prep) and isinstance(prep, (int, float))
-                else 0.0
-            )
-            a_val = (
-                float(act)
-                if pd.notna(act) and isinstance(act, (int, float))
-                else 0.0
-            )
+            p_val = float(prep) if pd.notna(prep) and isinstance(prep, (int, float)) else 0.0
+            a_val = float(act) if pd.notna(act) and isinstance(act, (int, float)) else 0.0
 
-            # 롯트 번호 유효성 확인
+            # 롯트 번호 유효성 판단
             lot_str = str(lot).strip() if pd.notna(lot) else ""
             has_lot = (
                 lot_str != ""
@@ -206,23 +197,18 @@ def generate_salad_report(excel_file):
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
 
         if has_lot:
-            # 롯트번호가 있는 경우 연도/날짜 추출
+            # 롯트번호가 존재하는 경우
             yymmdd_worklog = re.sub(r"[^\d]", "", lot)
             if len(yymmdd_worklog) >= 8:
                 yymmdd_worklog = yymmdd_worklog[2:8]
 
-            code_worklog = (
-                f"{p}{yymmdd_worklog}-K01"
-                if yymmdd_worklog
-                else "코드변환실패"
-            )
-            # 재고 시트 참고하여 매입 코드 할당
-            code_purchase = guess_purchase_code(item, prod_date, df_stock)
+            code_worklog = f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
+            code_purchase = guess_purchase_code(item, prod_date, stock_records)
         else:
-            # 롯트 번호가 없는 경우
+            # 롯트번호가 없는 경우 -> '없음' 표시
             code_worklog = "없음"
-            # 첫 번째 시트 재고를 바탕으로 추측 생성
-            code_purchase = guess_purchase_code(item, prod_date, df_stock)
+            # 첫 번째 시트 A/B/D/F열 재고 데이터 기반 코드 추측
+            code_purchase = guess_purchase_code(item, prod_date, stock_records)
 
         is_match = (
             "일치"
@@ -251,9 +237,7 @@ def generate_salad_report(excel_file):
 if excel_file is not None:
     try:
         df_result = generate_salad_report(excel_file)
-        st.success(
-            "✅ 첫 시트(재고)와 일자별 시트 대조가 완료되었습니다!"
-        )
+        st.success("✅ 첫 시트(재고)와 일자별 시트 대조가 완료되었습니다!")
 
         st.dataframe(df_result, use_container_width=True)
 
@@ -265,9 +249,7 @@ if excel_file is not None:
 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_result.to_excel(
-                writer, index=False, sheet_name="원료코드_대조표"
-            )
+            df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
         b64_excel = base64.b64encode(buffer.getvalue()).decode()
 
         button_html = (
