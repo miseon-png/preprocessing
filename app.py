@@ -85,6 +85,33 @@ item_col_map = {
 }
 
 
+def extract_yymmdd_and_mmdd(date_val):
+    """다양한 형태의 날짜(26.10.05, 2026-10-05, 10/05 등)에서 YYMMDD 및 MMDD 추출"""
+    date_str = str(date_val).strip()
+    digits = re.sub(r"[^\d]", "", date_str)
+
+    # 1) YYYYMMDD 형태 (8자리) -> ex: 20261005
+    if len(digits) == 8:
+        return digits[2:4], digits[2:8], digits[4:8]  # YY, YYMMDD, MMDD
+
+    # 2) YYMMDD 형태 (6자리) -> ex: 261005
+    elif len(digits) == 6:
+        return digits[0:2], digits, digits[2:6]  # YY, YYMMDD, MMDD
+
+    # 3) MMDD 형태 (4자리) -> ex: 1005
+    elif len(digits) == 4:
+        return "26", f"26{digits}", digits
+
+    # 4) 정규표현식으로 월/일 추출 시도 (ex: 10/05, 10.5 등)
+    match = re.search(r"(\d{1,2})[-./](\d{1,2})", date_str)
+    if match:
+        mm = match.group(1).zfill(2)
+        dd = match.group(2).zfill(2)
+        return "26", f"26{mm}{dd}", f"{mm}{dd}"
+
+    return "26", "261001", "1001"
+
+
 def parse_stock_sheet(xls):
     """첫 시트(재고)에서 A열 입고일자와 B/D/F열 재고 정보 추출"""
     try:
@@ -95,12 +122,8 @@ def parse_stock_sheet(xls):
         for idx, row in df_stock.iterrows():
             a_val = str(row.iloc[0]) if len(row) > 0 and pd.notna(row.iloc[0]) else ""
 
-            # '10/05 입고' 또는 '10/05' 형태에서 MMDD 추출
-            date_match = re.search(r"(\d{1,2})/(\d{1,2})", a_val)
-            if date_match:
-                mm, dd = date_match.group(1).zfill(2), date_match.group(2).zfill(2)
-                mmdd = f"{mm}{dd}"
-
+            _, _, mmdd = extract_yymmdd_and_mmdd(a_val)
+            if mmdd != "1001" or "10/01" in a_val or "10.01" in a_val:
                 row_info = {"mmdd": mmdd}
                 for item_name, col_idx in item_col_map.items():
                     cell_val = row.iloc[col_idx] if col_idx < len(row) else None
@@ -132,7 +155,6 @@ def parse_csv_purchase(uploaded_file):
             st.warning(f"매입 엑셀 파일 읽기 실패: {e}")
             return pd.DataFrame()
 
-    # CSV 인코딩 자동 우회 탐색
     encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
     for enc in encodings:
         try:
@@ -151,34 +173,31 @@ def guess_purchase_code(item, prod_date, stock_records, df_csv):
     lookup_item = "프릴아이스" if "프릴" in str(item) else str(item).strip()
     p_code = prefix_map.get(lookup_item, "X")
 
-    clean_pdate = re.sub(r"[^\d]", "", str(prod_date))
-    year_prefix = clean_pdate[2:4] if len(clean_pdate) >= 8 else "26"
-    p_mmdd = clean_pdate[4:8] if len(clean_pdate) >= 8 else ""
-
+    yy_prefix, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
     v_code = "K01"
 
     # [케이스 1] 양상추, 양배추, 적채 -> 첫 시트 재고 참조
     if lookup_item in item_col_map:
         matched_mmdd = None
         if stock_records:
+            # 생산일자(p_mmdd) 이하인 재고 입고일 중 가장 최근(마지막) 날짜 선택
             valid_dates = [
                 r["mmdd"]
                 for r in stock_records
-                if r.get(lookup_item) and (not p_mmdd or r["mmdd"] <= p_mmdd)
+                if r.get(lookup_item) and r["mmdd"] <= p_mmdd
             ]
             if valid_dates:
                 matched_mmdd = valid_dates[-1]
 
         if not matched_mmdd:
-            matched_mmdd = p_mmdd if p_mmdd else "1001"
+            matched_mmdd = p_mmdd
 
-        return f"{p_code}{year_prefix}{matched_mmdd}-{v_code}"
+        return f"{p_code}{yy_prefix}{matched_mmdd}-{v_code}"
 
     # [케이스 2] 프릴 / 프릴아이스 및 기타 -> CSV/Excel 매입 입고자료에서 최신 입고분 탐색
     else:
         if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
             try:
-                # 품목명이 포함된 행 검색
                 df_filtered = df_csv[
                     df_csv.astype(str)
                     .apply(
@@ -188,24 +207,29 @@ def guess_purchase_code(item, prod_date, stock_records, df_csv):
                 ]
 
                 if not df_filtered.empty:
-                    latest_row = df_filtered.iloc[-1]
-                    row_str = " ".join(latest_row.astype(str).tolist())
+                    # 생산일자 이전 또는 당일의 최신 매입 내역 검색
+                    candidate_rows = []
+                    for _, r in df_filtered.iterrows():
+                        row_str = " ".join(r.astype(str).tolist())
+                        _, r_yymmdd, r_mmdd = extract_yymmdd_and_mmdd(row_str)
+                        if r_mmdd <= p_mmdd:
+                            candidate_rows.append((r_yymmdd, r_mmdd, row_str))
 
-                    date_find = re.search(r"20?(\d{2})[-./]?(\d{2})[-./]?(\d{2})", row_str)
-                    if date_find:
-                        matched_date = f"{date_find.group(1)}{date_find.group(2)}{date_find.group(3)}"
-                    else:
-                        matched_date = f"{year_prefix}{p_mmdd}" if p_mmdd else f"{year_prefix}1001"
+                    if candidate_rows:
+                        # 가장 최신 입고일 선택
+                        candidate_rows.sort(key=lambda x: x[0])
+                        matched_yymmdd = candidate_rows[-1][0]
+                        row_str = candidate_rows[-1][2]
 
-                    vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
-                    if vendor_find:
-                        v_code = vendor_find.group(1)
+                        vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
+                        if vendor_find:
+                            v_code = vendor_find.group(1)
 
-                    return f"{p_code}{matched_date}-{v_code}"
+                        return f"{p_code}{matched_yymmdd}-{v_code}"
             except Exception:
                 pass
 
-        return f"{p_code}{year_prefix}{p_mmdd if p_mmdd else '1001'}-{v_code}"
+        return f"{p_code}{p_yymmdd}-{v_code}"
 
 
 def generate_salad_report(excel_file, csv_file):
@@ -314,10 +338,7 @@ def generate_salad_report(excel_file, csv_file):
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
 
         if has_lot:
-            yymmdd_worklog = re.sub(r"[^\d]", "", lot)
-            if len(yymmdd_worklog) >= 8:
-                yymmdd_worklog = yymmdd_worklog[2:8]
-
+            _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
             code_worklog = (
                 f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
             )
