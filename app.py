@@ -229,3 +229,172 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
+        try:
+            df_s = pd.read_excel(excel_file, sheet_name=sheet)
+
+            if df_s.shape[0] < 5 or df_s.shape[1] < 14:
+                continue
+
+            prod_date = df_s.iloc[0, 0]
+
+            items = [
+                df_s.iloc[0, 4],
+                df_s.iloc[0, 7],
+                df_s.iloc[0, 10],
+                df_s.iloc[0, 13],
+            ]
+            lots = [
+                df_s.iloc[1, 5],
+                df_s.iloc[1, 8],
+                df_s.iloc[1, 11],
+                df_s.iloc[1, 14],
+            ]
+            prep_pck = [
+                df_s.iloc[2, 4],
+                df_s.iloc[2, 7],
+                df_s.iloc[2, 10],
+                df_s.iloc[2, 13],
+            ]
+            actual_input = [
+                df_s.iloc[4, 4],
+                df_s.iloc[4, 7],
+                df_s.iloc[4, 10],
+                df_s.iloc[4, 13],
+            ]
+
+            for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
+                if (
+                    pd.isna(item)
+                    or str(item).strip() == ""
+                    or str(item).strip() == "nan"
+                ):
+                    continue
+
+                try:
+                    p_val = float(prep) if pd.notna(prep) else 0.0
+                except (ValueError, TypeError):
+                    p_val = 0.0
+
+                try:
+                    a_val = float(act) if pd.notna(act) else 0.0
+                except (ValueError, TypeError):
+                    a_val = 0.0
+
+                lot_str = str(lot).strip() if pd.notna(lot) else ""
+                has_lot = (
+                    lot_str != ""
+                    and lot_str.lower() != "nan"
+                    and lot_str != "none"
+                )
+
+                records.append(
+                    {
+                        "생산일자": prod_date,
+                        "품목": str(item).strip(),
+                        "작업일지_롯트": lot_str if has_lot else "없음",
+                        "실투입 양 (kg)": round(a_val / 1000, 1),
+                        "준비 양 (kg)": round(p_val / 1000, 1),
+                        "has_lot": has_lot,
+                    }
+                )
+        except Exception:
+            continue
+
+    if not records:
+        st.error("생산일지 시트에서 처리 가능한 데이터를 찾지 못했습니다.")
+        return pd.DataFrame()
+
+    df_report = pd.DataFrame(records)
+
+    def process_codes(row):
+        item = row["품목"]
+        lot = row["작업일지_롯트"]
+        has_lot = row["has_lot"]
+        prod_date = row["생산일자"]
+
+        lookup_item = "프릴아이스" if "프릴" in item else item
+        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
+
+        if has_lot:
+            yymmdd_worklog = re.sub(r"[^\d]", "", lot)
+            if len(yymmdd_worklog) >= 8:
+                yymmdd_worklog = yymmdd_worklog[2:8]
+
+            code_worklog = (
+                f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
+            )
+            code_purchase = guess_purchase_code(
+                item, prod_date, stock_records, df_csv
+            )
+        else:
+            code_worklog = "없음"
+            code_purchase = guess_purchase_code(
+                item, prod_date, stock_records, df_csv
+            )
+
+        is_match = (
+            "일치"
+            if code_worklog == code_purchase and code_worklog != "없음"
+            else "불일치(추측)"
+        )
+        return pd.Series([code_worklog, code_purchase, is_match])
+
+    df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
+        df_report.apply(process_codes, axis=1)
+    )
+
+    return df_report[
+        [
+            "생산일자",
+            "품목",
+            "작업일지 기준 코드",
+            "매입자료 기준 코드",
+            "일치여부",
+            "실투입 양 (kg)",
+            "준비 양 (kg)",
+        ]
+    ]
+
+
+if excel_file is not None:
+    try:
+        df_result = generate_salad_report(excel_file, csv_file)
+        if not df_result.empty:
+            st.success("✅ 생산일지 재고 시트 및 CSV 최신 입고자료 대조가 완료되었습니다!")
+
+            st.dataframe(df_result, use_container_width=True)
+
+            html_table = df_result.to_html(classes="print-table", index=False)
+            st.markdown(
+                f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>',
+                unsafe_allow_html=True,
+            )
+
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
+            b64_excel = base64.b64encode(buffer.getvalue()).decode()
+
+            button_html = (
+                '<div style="display: flex; gap: 16px; width: 100%; margin-top: 8px;">'
+                f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_excel}" '
+                'download="원료코드_비교_정리표.xlsx" '
+                'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; text-decoration: none; '
+                'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
+                'border-radius: 8px; box-sizing: border-box;">📥 엑셀 파일 다운로드 (.xlsx)</a>'
+                '<button onclick="window.parent.print()" '
+                'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; border: none; '
+                'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
+                'border-radius: 8px; cursor: pointer; box-sizing: border-box;">🖨 이 페이지 바로 인쇄하기</button>'
+                "</div>"
+            )
+            st.components.v1.html(button_html, height=65)
+
+    except Exception as e:
+        st.error(f"처리 중 오류가 발생했습니다: {e}")
+        st.code(traceback.format_exc())
+else:
+    st.info("👆 1. 샐러드 생산일지 엑셀 파일과 2. CSV/Excel 매입 자료를 업로드해주세요.")
+```eof
+
+예외 처리를 보강한 전체 앱 코드를 반영했습니다. 파일 해석 또는 매입 자료 파싱 과정에서 발생하는 오류를 우회하여 대조표가 안정적으로 생성될 것입니다.
