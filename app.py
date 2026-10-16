@@ -1,6 +1,7 @@
 import base64
 import io
 import re
+import traceback
 import pandas as pd
 import streamlit as st
 
@@ -65,7 +66,7 @@ with col1:
     )
 with col2:
     csv_file = st.file_uploader(
-        "2. 원료 매입 입고자료 (CSV) 업로드", type=["csv"]
+        "2. 원료 매입 입고자료 (CSV/Excel) 업로드", type=["csv", "xlsx", "xls"]
     )
 
 prefix_map = {
@@ -86,52 +87,68 @@ item_col_map = {
 
 def parse_stock_sheet(xls):
     """첫 시트(재고)에서 A열 입고일자와 B/D/F열 재고 정보 추출"""
-    stock_sheet = xls.sheet_names[0]
-    df_stock = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
-
-    stock_records = []
-    for idx, row in df_stock.iterrows():
-        a_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
-
-        # '10/05 입고' 또는 '10/05' 형태에서 MMDD 추출
-        date_match = re.search(r"(\d{1,2})/(\d{1,2})", a_val)
-        if date_match:
-            mm, dd = date_match.group(1).zfill(2), date_match.group(2).zfill(2)
-            mmdd = f"{mm}{dd}"
-
-            row_info = {"mmdd": mmdd}
-            for item_name, col_idx in item_col_map.items():
-                cell_val = row.iloc[col_idx] if col_idx < len(row) else None
-                has_stock = (
-                    pd.notna(cell_val)
-                    and str(cell_val).strip() not in ["", "0", "nan"]
-                )
-                row_info[item_name] = has_stock
-
-            stock_records.append(row_info)
-
-    return stock_records
-
-
-def parse_csv_purchase(csv_file):
-    """CSV 매입 입고자료 읽기 및 정제"""
     try:
-        # CP949 / EUC-KR / UTF-8 대응
-        try:
-            df_csv = pd.read_csv(csv_file, encoding="utf-8")
-        except UnicodeDecodeError:
-            csv_file.seek(0)
-            df_csv = pd.read_csv(csv_file, encoding="cp949")
-        return df_csv
-    except Exception:
+        stock_sheet = xls.sheet_names[0]
+        df_stock = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
+
+        stock_records = []
+        for idx, row in df_stock.iterrows():
+            a_val = str(row.iloc[0]) if len(row) > 0 and pd.notna(row.iloc[0]) else ""
+
+            # '10/05 입고' 또는 '10/05' 형태에서 MMDD 추출
+            date_match = re.search(r"(\d{1,2})/(\d{1,2})", a_val)
+            if date_match:
+                mm, dd = date_match.group(1).zfill(2), date_match.group(2).zfill(2)
+                mmdd = f"{mm}{dd}"
+
+                row_info = {"mmdd": mmdd}
+                for item_name, col_idx in item_col_map.items():
+                    cell_val = row.iloc[col_idx] if col_idx < len(row) else None
+                    has_stock = (
+                        pd.notna(cell_val)
+                        and str(cell_val).strip() not in ["", "0", "nan", "None"]
+                    )
+                    row_info[item_name] = has_stock
+
+                stock_records.append(row_info)
+
+        return stock_records
+    except Exception as e:
+        st.warning(f"재고 시트 해석 중 알림: {e}")
+        return []
+
+
+def parse_csv_purchase(uploaded_file):
+    """CSV 또는 Excel 매입 입고자료 안전하게 읽기"""
+    if uploaded_file is None:
         return pd.DataFrame()
+
+    file_name = uploaded_file.name.lower()
+
+    if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
+        try:
+            return pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.warning(f"매입 엑셀 파일 읽기 실패: {e}")
+            return pd.DataFrame()
+
+    # CSV 인코딩 자동 우회 탐색
+    encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
+    for enc in encodings:
+        try:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, encoding=enc)
+            return df
+        except Exception:
+            continue
+
+    st.warning("매입 CSV 인코딩을 해석할 수 없습니다.")
+    return pd.DataFrame()
 
 
 def guess_purchase_code(item, prod_date, stock_records, df_csv):
     """
-    생산일자 기준:
-    1) 양상추/양배추/적채: 맨 앞 재고 시트의 A열 최신 입고일자 참조
-    2) 프릴/프릴아이스 등: CSV 매입자료의 최신 입고 내역 참조
+    생산일자 기준 매입자료 코드 추측
     """
     lookup_item = "프릴아이스" if "프릴" in str(item) else str(item).strip()
     p_code = prefix_map.get(lookup_item, "X")
@@ -140,7 +157,6 @@ def guess_purchase_code(item, prod_date, stock_records, df_csv):
     year_prefix = clean_pdate[2:4] if len(clean_pdate) >= 8 else "26"
     p_mmdd = clean_pdate[4:8] if len(clean_pdate) >= 8 else ""
 
-    # 기본 업체 코드 설정
     v_code = "K01"
 
     # [케이스 1] 양상추, 양배추, 적채 -> 첫 시트 재고 참조
@@ -160,39 +176,37 @@ def guess_purchase_code(item, prod_date, stock_records, df_csv):
 
         return f"{p_code}{year_prefix}{matched_mmdd}-{v_code}"
 
-    # [케이스 2] 프릴 / 프릴아이스 및 기타 -> CSV 매입 입고자료에서 최신 입고분 탐색
+    # [케이스 2] 프릴 / 프릴아이스 및 기타 -> CSV/Excel 매입 입고자료에서 최신 입고분 탐색
     else:
-        if not df_csv.empty:
-            # CSV 내에서 품목명이 포함된 행 필터링
-            df_filtered = df_csv[
-                df_csv.astype(str)
-                .apply(
-                    lambda r: r.str.contains(lookup_item, regex=False).any(),
-                    axis=1,
-                )
-            ]
+        if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
+            try:
+                # 품목명이 포함된 행 검색
+                df_filtered = df_csv[
+                    df_csv.astype(str)
+                    .apply(
+                        lambda r: r.str.contains(lookup_item, regex=False).any(),
+                        axis=1,
+                    )
+                ]
 
-            if not df_filtered.empty:
-                # 가장 최신 입고행(맨 마지막 행) 가져오기
-                latest_row = df_filtered.iloc[-1]
-                # CSV에서 날짜 및 업체코드 추출 시도
-                row_str = " ".join(latest_row.astype(str).tolist())
+                if not df_filtered.empty:
+                    latest_row = df_filtered.iloc[-1]
+                    row_str = " ".join(latest_row.astype(str).tolist())
 
-                # 날짜 추출 (6자리 숫자 또는 MMDD)
-                date_find = re.search(r"20?(\d{2})[-./]?(\d{2})[-./]?(\d{2})", row_str)
-                if date_find:
-                    matched_date = f"{date_find.group(1)}{date_find.group(2)}{date_find.group(3)}"
-                else:
-                    matched_date = f"{year_prefix}{p_mmdd}" if p_mmdd else f"{year_prefix}1001"
+                    date_find = re.search(r"20?(\d{2})[-./]?(\d{2})[-./]?(\d{2})", row_str)
+                    if date_find:
+                        matched_date = f"{date_find.group(1)}{date_find.group(2)}{date_find.group(3)}"
+                    else:
+                        matched_date = f"{year_prefix}{p_mmdd}" if p_mmdd else f"{year_prefix}1001"
 
-                # 업체 코드 (H02, S01, K01 등) 탐색
-                vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
-                if vendor_find:
-                    v_code = vendor_find.group(1)
+                    vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
+                    if vendor_find:
+                        v_code = vendor_find.group(1)
 
-                return f"{p_code}{matched_date}-{v_code}"
+                    return f"{p_code}{matched_date}-{v_code}"
+            except Exception:
+                pass
 
-        # CSV 정보가 없거나 못 찾을 경우 기본 추측 코드
         return f"{p_code}{year_prefix}{p_mmdd if p_mmdd else '1001'}-{v_code}"
 
 
@@ -203,7 +217,7 @@ def generate_salad_report(excel_file, csv_file):
     stock_records = parse_stock_sheet(xls)
 
     # 2. CSV 매입자료 파싱
-    df_csv = parse_csv_purchase(csv_file) if csv_file is not None else pd.DataFrame()
+    df_csv = parse_csv_purchase(csv_file)
 
     # 3. 일자별 생산 시트 순회 (첫 번째 시트 제외)
     exclude_sheets = ["테스트", "원가", "Sheet1"]
@@ -215,163 +229,3 @@ def generate_salad_report(excel_file, csv_file):
 
     records = []
     for sheet in daily_sheets:
-        df_s = pd.read_excel(excel_file, sheet_name=sheet)
-
-        # 생산일자 (A1)
-        prod_date = df_s.iloc[0, 0]
-
-        items = [
-            df_s.iloc[0, 4],
-            df_s.iloc[0, 7],
-            df_s.iloc[0, 10],
-            df_s.iloc[0, 13],
-        ]  # E2, H2, K2, N2
-        lots = [
-            df_s.iloc[1, 5],
-            df_s.iloc[1, 8],
-            df_s.iloc[1, 11],
-            df_s.iloc[1, 14],
-        ]  # F3, I3, L3, O3
-        prep_pck = [
-            df_s.iloc[2, 4],
-            df_s.iloc[2, 7],
-            df_s.iloc[2, 10],
-            df_s.iloc[2, 13],
-        ]  # E4, H4, K4, N4
-        actual_input = [
-            df_s.iloc[4, 4],
-            df_s.iloc[4, 7],
-            df_s.iloc[4, 10],
-            df_s.iloc[4, 13],
-        ]  # E6, H6, K6, N6
-
-        for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
-            if (
-                pd.isna(item)
-                or str(item).strip() == ""
-                or str(item).strip() == "nan"
-            ):
-                continue
-
-            p_val = (
-                float(prep)
-                if pd.notna(prep) and isinstance(prep, (int, float))
-                else 0.0
-            )
-            a_val = (
-                float(act)
-                if pd.notna(act) and isinstance(act, (int, float))
-                else 0.0
-            )
-
-            # 롯트 번호 존재 여부 확인
-            lot_str = str(lot).strip() if pd.notna(lot) else ""
-            has_lot = (
-                lot_str != ""
-                and lot_str.lower() != "nan"
-                and lot_str != "None"
-            )
-
-            records.append(
-                {
-                    "생산일자": prod_date,
-                    "품목": str(item).strip(),
-                    "작업일지_롯트": lot_str if has_lot else "없음",
-                    "실투입 양 (kg)": round(a_val / 1000, 1),
-                    "준비 양 (kg)": round(p_val / 1000, 1),
-                    "has_lot": has_lot,
-                }
-            )
-
-    df_report = pd.DataFrame(records)
-
-    def process_codes(row):
-        item = row["품목"]
-        lot = row["작업일지_롯트"]
-        has_lot = row["has_lot"]
-        prod_date = row["생산일자"]
-
-        lookup_item = "프릴아이스" if "프릴" in item else item
-        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
-
-        if has_lot:
-            # 롯트번호가 있는 경우
-            yymmdd_worklog = re.sub(r"[^\d]", "", lot)
-            if len(yymmdd_worklog) >= 8:
-                yymmdd_worklog = yymmdd_worklog[2:8]
-
-            code_worklog = (
-                f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
-            )
-            code_purchase = guess_purchase_code(
-                item, prod_date, stock_records, df_csv
-            )
-        else:
-            # 롯트번호가 없는 경우 -> '없음'으로 표기
-            code_worklog = "없음"
-            # 재고시트(양상추/양배추/적채) 및 CSV(프릴 등) 참조하여 최신 입고분으로 추측
-            code_purchase = guess_purchase_code(
-                item, prod_date, stock_records, df_csv
-            )
-
-        is_match = (
-            "일치"
-            if code_worklog == code_purchase and code_worklog != "없음"
-            else "불일치(추측)"
-        )
-        return pd.Series([code_worklog, code_purchase, is_match])
-
-    df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
-        df_report.apply(process_codes, axis=1)
-    )
-
-    return df_report[
-        [
-            "생산일자",
-            "품목",
-            "작업일지 기준 코드",
-            "매입자료 기준 코드",
-            "일치여부",
-            "실투입 양 (kg)",
-            "준비 양 (kg)",
-        ]
-    ]
-
-
-if excel_file is not None:
-    try:
-        df_result = generate_salad_report(excel_file, csv_file)
-        st.success("✅ 생산일지 재고 시트 및 CSV 최신 입고자료 대조가 완료되었습니다!")
-
-        st.dataframe(df_result, use_container_width=True)
-
-        html_table = df_result.to_html(classes="print-table", index=False)
-        st.markdown(
-            f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>',
-            unsafe_allow_html=True,
-        )
-
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
-        b64_excel = base64.b64encode(buffer.getvalue()).decode()
-
-        button_html = (
-            '<div style="display: flex; gap: 16px; width: 100%; margin-top: 8px;">'
-            f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_excel}" '
-            'download="원료코드_비교_정리표.xlsx" '
-            'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; text-decoration: none; '
-            'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
-            'border-radius: 8px; box-sizing: border-box;">📥 엑셀 파일 다운로드 (.xlsx)</a>'
-            '<button onclick="window.parent.print()" '
-            'style="flex: 1; height: 48px; background-color: #2E7D32; color: white; border: none; '
-            'display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; '
-            'border-radius: 8px; cursor: pointer; box-sizing: border-box;">🖨 이 페이지 바로 인쇄하기</button>'
-            "</div>"
-        )
-        st.components.v1.html(button_html, height=65)
-
-    except Exception as e:
-        st.error(f"처리 중 오류가 발생했습니다: {e}")
-else:
-    st.info("👆 1. 샐러드 생산일지 엑셀 파일과 2. CSV 매입 자료를 업로드해주세요.")
