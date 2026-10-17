@@ -68,31 +68,19 @@ st.markdown(
 
 st.title("🥗 샐러드 생산일보 원료코드 대조 System")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    stock_source = st.radio(
-        "📌 재고 데이터 입력 방식 선택 (OR)",
-        ["1. 샐러드 생산일지 엑셀 파일 (첫 시트 재고)", "2. 재고 표 이미지 사진"],
-        horizontal=True,
+    excel_file = st.file_uploader(
+        "1. 샐러드 생산일지 (Excel) 업로드", type=["xlsx", "xls"]
     )
-
-    excel_file = None
-    img_file = None
-
-    if "1." in stock_source:
-        excel_file = st.file_uploader(
-            "1. 샐러드 생산일지 (Excel) 업로드", type=["xlsx", "xls"]
-        )
-    else:
-        img_file = st.file_uploader(
-            "2. 재고 표 이미지 업로드 (첫 시트 사진)",
-            type=["jpg", "jpeg", "png"],
-        )
-
 with col2:
+    img_file = st.file_uploader(
+        "2. (선택) 재고 표 이미지 업로드 (첫 시트 사진)",
+        type=["jpg", "jpeg", "png"],
+    )
+with col3:
     csv_file = st.file_uploader(
-        "3. 원료 매입 입고자료 / 수불부 (CSV/Excel)",
-        type=["csv", "xlsx", "xls"],
+        "3. 원료 매입 입고자료/수불부 (CSV/Excel)", type=["csv", "xlsx", "xls"]
     )
 
 prefix_map = {
@@ -156,9 +144,11 @@ def parse_stock_image(uploaded_img):
         image = Image.open(uploaded_img)
         img_np = np.array(image)
 
+        # OCR 텍스트 추출
         results = reader.readtext(img_np)
         lines = [res[1] for res in results]
 
+        # 이미지에서 날짜 및 입고/수량 추출
         for idx, text in enumerate(lines):
             text_str = text.strip()
             if "입고" in text_str or re.search(
@@ -166,11 +156,12 @@ def parse_stock_image(uploaded_img):
             ):
                 yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(text_str)
 
+                # 주변 텍스트에서 숫자(수량) 추출
                 nums = []
                 for offset in range(1, 8):
                     if idx + offset < len(lines):
                         clean_num = re.sub(r"[^\d]", "", lines[idx + offset])
-                        if len(clean_num) >= 5:
+                        if len(clean_num) >= 5:  # 10,000 이상의 수량 단위
                             nums.append(float(clean_num))
 
                 if len(nums) >= 3:
@@ -269,7 +260,7 @@ def parse_csv_purchase(uploaded_file):
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
         try:
             return pd.read_excel(uploaded_file)
-        except Exception:
+        except Exception as e:
             return pd.DataFrame()
 
     encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
@@ -366,25 +357,19 @@ def consume_fifo_and_format(
 
 
 def generate_salad_report(excel_file, img_file, csv_file):
-    item_lots = {"양상추": [], "양배추": [], "적채": []}
+    xls = pd.ExcelFile(excel_file)
 
-    # 1. OR 구조 처리: 이미지 파일 우선 파싱, 없을 시 엑셀 파일 첫 시트 파싱
+    # 1. 이미지가 업로드된 경우 이미지 표 OCR 우선 사용, 없을 경우 엑셀 첫 시트 파싱
     if img_file is not None:
-        st.info("📷 업로드된 재고 표 이미지 사진에서 데이터를 인식하여 처리합니다.")
+        st.info("📷 업로드된 재고 표 이미지에서 데이터를 추출합니다.")
         item_lots = parse_stock_image(img_file)
-    elif excel_file is not None:
-        xls = pd.ExcelFile(excel_file)
+    else:
         item_lots = parse_stock_sheet_fifo(xls)
 
     # 2. 매입 입고자료/수불부 파싱
     df_csv = parse_csv_purchase(csv_file)
 
-    # 3. 생산 시트 순회 (엑셀 파일이 필수)
-    if excel_file is None:
-        st.warning("⚠️ 생산일지 일자별 시트 분석을 위해 생산일지 엑셀 파일이 필요합니다.")
-        return pd.DataFrame()
-
-    xls = pd.ExcelFile(excel_file)
+    # 3. 일자별 생산 시트 순회
     exclude_sheets = ["테스트", "원가", "Sheet1"]
     daily_sheets = [
         s
@@ -519,11 +504,11 @@ def generate_salad_report(excel_file, img_file, csv_file):
     ]
 
 
-if excel_file is not None or img_file is not None:
+if excel_file is not None:
     try:
         df_result = generate_salad_report(excel_file, img_file, csv_file)
         if not df_result.empty:
-            st.success("✅ 원료코드 대조 작업이 완료되었습니다!")
+            st.success("✅ 생산일지 재고 및 수불부 대조가 완료되었습니다!")
 
             st.dataframe(df_result, use_container_width=True)
 
@@ -560,5 +545,5 @@ if excel_file is not None or img_file is not None:
         st.code(traceback.format_exc())
 else:
     st.info(
-        "👆 상단에서 1) 생산일지 엑셀 파일 또는 2) 재고 표 이미지를 선택하여 업로드해주세요."
+        "👆 1. 샐러드 생산일지 엑셀 파일과 2. (선택) 재고 표 이미지, 3. 원료 매입 입고자료/수불부 CSV를 업로드해주세요."
     )
