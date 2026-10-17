@@ -66,7 +66,8 @@ with col1:
     )
 with col2:
     csv_file = st.file_uploader(
-        "2. 원료 매입 입고자료 (CSV/Excel) 업로드", type=["csv", "xlsx", "xls"]
+        "2. 원료 매입 입고자료 / 수불부 (CSV/Excel) 업로드",
+        type=["csv", "xlsx", "xls"],
     )
 
 prefix_map = {
@@ -77,77 +78,116 @@ prefix_map = {
     "프릴아이스": "F",
 }
 
-# 품목별 첫 시트(재고 시트) 컬럼 인덱스 매핑 (A=0, B=1, D=3, F=5)
+# 재고 시트(첫 번째 시트) 컬럼 인덱스 매핑 (A=날짜/입고, B=양상추재고, C=양상추투입, D=양배추재고...)
 item_col_map = {
-    "양상추": 1,  # B열
-    "양배추": 3,  # D열
-    "적채": 5,  # F열
+    "양상추": {"stock": 1, "input": 2},
+    "양배추": {"stock": 3, "input": 4},
+    "적채": {"stock": 5, "input": 6},
 }
 
 
-def extract_yymmdd_and_mmdd(date_val):
-    """다양한 형태의 날짜(26.10.05, 2026-10-05, 10/05 등)에서 YYMMDD 및 MMDD 추출"""
-    date_str = str(date_val).strip()
-    digits = re.sub(r"[^\d]", "", date_str)
+def extract_yymmdd_and_mmdd(val_str):
+    """문자열/날짜 셀에서 연, 월, 일 정규식 추출"""
+    val_str = str(val_str).strip()
 
-    # 1) YYYYMMDD 형태 (8자리) -> ex: 20261005
-    if len(digits) == 8:
-        return digits[2:4], digits[2:8], digits[4:8]  # YY, YYMMDD, MMDD
+    # 1. YYYY-MM-DD 또는 YYYY.MM.DD
+    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
+    if m_full:
+        yy = m_full.group(1)[2:]
+        mm = m_full.group(2).zfill(2)
+        dd = m_full.group(3).zfill(2)
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 2) YYMMDD 형태 (6자리) -> ex: 261005
-    elif len(digits) == 6:
-        return digits[0:2], digits, digits[2:6]  # YY, YYMMDD, MMDD
+    # 2. MM/DD 또는 MM.DD (입고 문구 등)
+    m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
+    if m_short:
+        p1 = m_short.group(1).zfill(2)
+        p2 = m_short.group(2).zfill(2)
+        if len(p1) == 2 and int(p1) > 12:
+            yy = p1
+            mm = p2
+            dd = "01"
+        else:
+            yy = "26"
+            mm = p1
+            dd = p2
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 3) MMDD 형태 (4자리) -> ex: 1005
-    elif len(digits) == 4:
-        return "26", f"26{digits}", digits
-
-    # 4) 정규표현식으로 월/일 추출 시도 (ex: 10/05, 10.5 등)
-    match = re.search(r"(\d{1,2})[-./](\d{1,2})", date_str)
-    if match:
-        mm = match.group(1).zfill(2)
-        dd = match.group(2).zfill(2)
-        return "26", f"26{mm}{dd}", f"{mm}{dd}"
+    # 3. YYMMDD 6자리
+    m_digits = re.search(r"\b(\d{6})\b", val_str)
+    if m_digits:
+        d = m_digits.group(1)
+        return d[:2], d, d[2:]
 
     return "26", "261001", "1001"
 
 
-def parse_stock_sheet(xls):
-    """첫 시트(재고)에서 A열 입고일자와 B/D/F열 재고 정보 추출"""
+def parse_stock_sheet_fifo(xls):
+    """첫 번째 재고 시트에서 양상추, 양배추, 적채의 초기 재고 및 입고 로트 큐(Queue) 생성"""
+    item_lots = {item: [] for item in item_col_map}
     try:
         stock_sheet = xls.sheet_names[0]
         df_stock = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
-        stock_records = []
         for idx, row in df_stock.iterrows():
-            a_val = str(row.iloc[0]) if len(row) > 0 and pd.notna(row.iloc[0]) else ""
+            a_val = (
+                str(row.iloc[0]).strip()
+                if len(row) > 0 and pd.notna(row.iloc[0])
+                else ""
+            )
+            if not a_val or a_val.lower() == "nan":
+                continue
 
-            _, _, mmdd = extract_yymmdd_and_mmdd(a_val)
-            if mmdd != "1001" or "10/01" in a_val or "10.01" in a_val:
-                row_info = {"mmdd": mmdd}
-                for item_name, col_idx in item_col_map.items():
-                    cell_val = row.iloc[col_idx] if col_idx < len(row) else None
-                    has_stock = (
-                        pd.notna(cell_val)
-                        and str(cell_val).strip() not in ["", "0", "nan", "None"]
+            yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(a_val)
+            is_incoming = "입고" in a_val
+
+            for item, cols in item_col_map.items():
+                s_col = cols["stock"]
+                s_val = (
+                    row.iloc[s_col]
+                    if s_col < len(row) and pd.notna(row.iloc[s_col])
+                    else None
+                )
+
+                try:
+                    s_num = (
+                        float(re.sub(r"[^\d.]", "", str(s_val)))
+                        if s_val is not None
+                        else 0.0
                     )
-                    row_info[item_name] = has_stock
+                except Exception:
+                    s_num = 0.0
 
-                stock_records.append(row_info)
+                # 입고 행이거나, 첫 번째 이월재고 행인 경우 로트에 추가 (단위: kg)
+                if is_incoming and s_num > 0:
+                    item_lots[item].append(
+                        {
+                            "yymmdd": yymmdd,
+                            "avail_kg": round(s_num / 1000.0, 1),
+                            "vendor": "K01",
+                        }
+                    )
+                elif idx == 0 and s_num > 0:
+                    item_lots[item].append(
+                        {
+                            "yymmdd": yymmdd,
+                            "avail_kg": round(s_num / 1000.0, 1),
+                            "vendor": "K01",
+                        }
+                    )
 
-        return stock_records
+        return item_lots
     except Exception as e:
-        st.warning(f"재고 시트 해석 중 알림: {e}")
-        return []
+        st.warning(f"재고 시트 파싱 중 알림: {e}")
+        return item_lots
 
 
 def parse_csv_purchase(uploaded_file):
-    """CSV 또는 Excel 매입 입고자료 안전하게 읽기"""
+    """CSV 또는 Excel 매입 입고자료/수불부 읽기"""
     if uploaded_file is None:
         return pd.DataFrame()
 
     file_name = uploaded_file.name.lower()
-
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
         try:
             return pd.read_excel(uploaded_file)
@@ -159,8 +199,7 @@ def parse_csv_purchase(uploaded_file):
     for enc in encodings:
         try:
             uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding=enc)
-            return df
+            return pd.read_csv(uploaded_file, encoding=enc)
         except Exception:
             continue
 
@@ -168,80 +207,98 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 
-def guess_purchase_code(item, prod_date, stock_records, df_csv):
-    """생산일자 기준 매입자료 코드 추측"""
-    lookup_item = "프릴아이스" if "프릴" in str(item) else str(item).strip()
-    p_code = prefix_map.get(lookup_item, "X")
+def build_frill_lots_from_csv(df_csv, item_name):
+    """원재료 수불부(CSV/매입자료)에서 프릴/프릴아이스 입고 로트 추출"""
+    lots = []
+    if not isinstance(df_csv, pd.DataFrame) or df_csv.empty:
+        return lots
 
-    yy_prefix, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
-    v_code = "K01"
+    lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
 
-    # [케이스 1] 양상추, 양배추, 적채 -> 첫 시트 재고 참조
+    df_filtered = df_csv[
+        df_csv.astype(str).apply(
+            lambda r: r.str.contains(lookup_item, regex=False).any(), axis=1
+        )
+    ]
+
+    for _, r in df_filtered.iterrows():
+        row_str = " ".join(r.astype(str).tolist())
+        _, yymmdd, mmdd = extract_yymmdd_and_mmdd(row_str)
+
+        # 업체 코드 검색 (예: K01, F01 등)
+        vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
+        v_code = vendor_find.group(1) if vendor_find else "F01"
+
+        # 입고 수량(kg) 추출 시도
+        qty_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:kg|KG)?", row_str)
+        qty = float(qty_match.group(1)) if qty_match else 9999.0
+
+        lots.append(
+            {"yymmdd": yymmdd, "avail_kg": qty, "vendor": v_code, "mmdd": mmdd}
+        )
+
+    lots.sort(key=lambda x: x["yymmdd"])
+    return lots
+
+
+def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
+    """
+    선입선출(FIFO) 차감 수행 후 복수 로트일 경우 단일 셀 내 수량 병기 형태로 반환
+    예: X260930-K01(83.0kg) / X261001-K01(267.0kg)
+    """
+    lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
+    p_code = prefix_map.get(lookup_item, prefix_map.get(item_name, "X"))
+    _, p_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
+
+    # 1. 양상추/양배추/적채: 재고 시트 로트 사용
     if lookup_item in item_col_map:
-        matched_mmdd = None
-        if stock_records:
-            # 생산일자(p_mmdd) 이하인 재고 입고일 중 가장 최근(마지막) 날짜 선택
-            valid_dates = [
-                r["mmdd"]
-                for r in stock_records
-                if r.get(lookup_item) and r["mmdd"] <= p_mmdd
-            ]
-            if valid_dates:
-                matched_mmdd = valid_dates[-1]
-
-        if not matched_mmdd:
-            matched_mmdd = p_mmdd
-
-        return f"{p_code}{yy_prefix}{matched_mmdd}-{v_code}"
-
-    # [케이스 2] 프릴 / 프릴아이스 및 기타 -> CSV/Excel 매입 입고자료에서 최신 입고분 탐색
+        lots = item_lots.get(lookup_item, [])
+    # 2. 프릴/프릴아이스: 매입자료(CSV/수불부) 로트 사용
     else:
-        if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
-            try:
-                df_filtered = df_csv[
-                    df_csv.astype(str)
-                    .apply(
-                        lambda r: r.str.contains(lookup_item, regex=False).any(),
-                        axis=1,
-                    )
-                ]
+        if lookup_item not in item_lots:
+            item_lots[lookup_item] = build_frill_lots_from_csv(
+                df_csv, lookup_item
+            )
+        lots = item_lots.get(lookup_item, [])
 
-                if not df_filtered.empty:
-                    # 생산일자 이전 또는 당일의 최신 매입 내역 검색
-                    candidate_rows = []
-                    for _, r in df_filtered.iterrows():
-                        row_str = " ".join(r.astype(str).tolist())
-                        _, r_yymmdd, r_mmdd = extract_yymmdd_and_mmdd(row_str)
-                        if r_mmdd <= p_mmdd:
-                            candidate_rows.append((r_yymmdd, r_mmdd, row_str))
+    if not lots or req_kg <= 0:
+        return f"{p_code}{p_yymmdd}-K01({round(req_kg, 1)}kg)"
 
-                    if candidate_rows:
-                        # 가장 최신 입고일 선택
-                        candidate_rows.sort(key=lambda x: x[0])
-                        matched_yymmdd = candidate_rows[-1][0]
-                        row_str = candidate_rows[-1][2]
+    remaining = req_kg
+    used_parts = []
 
-                        vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
-                        if vendor_find:
-                            v_code = vendor_find.group(1)
+    for lot in lots:
+        if remaining <= 0:
+            break
+        if lot["avail_kg"] <= 0:
+            continue
 
-                        return f"{p_code}{matched_yymmdd}-{v_code}"
-            except Exception:
-                pass
+        used = min(lot["avail_kg"], remaining)
+        lot["avail_kg"] -= used
+        remaining -= used
 
-        return f"{p_code}{p_yymmdd}-{v_code}"
+        code = f"{p_code}{lot['yymmdd']}-{lot.get('vendor', 'K01')}"
+        used_parts.append(f"{code}({round(used, 1)}kg)")
+
+    if remaining > 0:
+        latest_yymmdd = lots[-1]["yymmdd"] if lots else p_yymmdd
+        v_code = lots[-1].get("vendor", "K01") if lots else "K01"
+        code = f"{p_code}{latest_yymmdd}-{v_code}"
+        used_parts.append(f"{code}({round(remaining, 1)}kg)")
+
+    return " / ".join(used_parts)
 
 
 def generate_salad_report(excel_file, csv_file):
     xls = pd.ExcelFile(excel_file)
 
-    # 1. 첫 번째 시트 (재고 데이터) 파싱
-    stock_records = parse_stock_sheet(xls)
+    # 1. 재고 시트(양상추/양배추/적채) 파싱
+    item_lots = parse_stock_sheet_fifo(xls)
 
-    # 2. CSV 매입자료 파싱
+    # 2. 매입 입고자료/수불부 CSV 파싱
     df_csv = parse_csv_purchase(csv_file)
 
-    # 3. 일자별 생산 시트 순회 (첫 번째 시트 제외)
+    # 3. 일자별 생산 시트 순회
     exclude_sheets = ["테스트", "원가", "Sheet1"]
     daily_sheets = [
         s
@@ -314,8 +371,8 @@ def generate_salad_report(excel_file, csv_file):
                         "생산일자": prod_date,
                         "품목": str(item).strip(),
                         "작업일지_롯트": lot_str if has_lot else "없음",
-                        "실투입 양 (kg)": round(a_val / 1000, 1),
-                        "준비 양 (kg)": round(p_val / 1000, 1),
+                        "실투입 양 (kg)": round(a_val / 1000.0, 1),
+                        "준비 양 (kg)": round(p_val / 1000.0, 1),
                         "has_lot": has_lot,
                     }
                 )
@@ -328,34 +385,39 @@ def generate_salad_report(excel_file, csv_file):
 
     df_report = pd.DataFrame(records)
 
+    # 일자별 순차적 FIFO 차감 적용
     def process_codes(row):
         item = row["품목"]
         lot = row["작업일지_롯트"]
         has_lot = row["has_lot"]
         prod_date = row["생산일자"]
+        act_kg = row["실투입 양 (kg)"]
 
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
 
+        # 작업일지 기준 코드
         if has_lot:
             _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
             code_worklog = (
                 f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
             )
-            code_purchase = guess_purchase_code(
-                item, prod_date, stock_records, df_csv
-            )
         else:
             code_worklog = "없음"
-            code_purchase = guess_purchase_code(
-                item, prod_date, stock_records, df_csv
-            )
 
-        is_match = (
-            "일치"
-            if code_worklog == code_purchase and code_worklog != "없음"
-            else "불일치(추측)"
+        # 매입자료 기준 코드 (FIFO 및 복수 수량 병기 적용)
+        code_purchase = consume_fifo_and_format(
+            item, act_kg, prod_date, item_lots, df_csv
         )
+
+        # 일치 여부 판정
+        if code_worklog != "없음" and code_worklog in code_purchase:
+            is_match = "일치"
+        elif code_worklog == "없음":
+            is_match = "불일치(작업일지 미기재)"
+        else:
+            is_match = "불일치(혼합/추측)"
+
         return pd.Series([code_worklog, code_purchase, is_match])
 
     df_report[["작업일지 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
@@ -379,7 +441,9 @@ if excel_file is not None:
     try:
         df_result = generate_salad_report(excel_file, csv_file)
         if not df_result.empty:
-            st.success("✅ 생산일지 재고 시트 및 CSV 최신 입고자료 대조가 완료되었습니다!")
+            st.success(
+                "✅ 원재료 수불부 연동 및 단일 셀 내 복수 로트 수량 병기 대조가 완료되었습니다!"
+            )
 
             st.dataframe(df_result, use_container_width=True)
 
@@ -391,7 +455,9 @@ if excel_file is not None:
 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
+                df_result.to_excel(
+                    writer, index=False, sheet_name="원료코드_대조표"
+                )
             b64_excel = base64.b64encode(buffer.getvalue()).decode()
 
             button_html = (
@@ -413,4 +479,6 @@ if excel_file is not None:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
         st.code(traceback.format_exc())
 else:
-    st.info("👆 1. 샐러드 생산일지 엑셀 파일과 2. CSV/Excel 매입 자료를 업로드해주세요.")
+    st.info(
+        "👆 1. 샐러드 생산일지 엑셀 파일과 2. 원료 매입 입고자료/수불부 CSV/Excel을 업로드해주세요."
+    )
