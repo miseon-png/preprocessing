@@ -155,7 +155,7 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# 교정된 로직: 매입자료 시트를 완벽한 수불 데이터로 변환
+# 올바른 순서 적용: 기초재고 -> 입고량 -> 투입량 -> 기말재고
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -181,14 +181,14 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if not a_val or a_val.lower() == "nan" or "날짜" in a_val or "매입" in a_val:
             continue
 
-        # 1) '입고' 문구가 포함된 행 처리 (A0, B1, D3, F5)
+        # 1) '입고' 행
         if "입고" in a_val:
             pending_in["yangsangchu"] += parse_num(row.iloc[1]) if len(row) > 1 else 0.0
             pending_in["yangbaechu"] += parse_num(row.iloc[3]) if len(row) > 3 else 0.0
             pending_in["jeokchae"] += parse_num(row.iloc[5]) if len(row) > 5 else 0.0
             continue
 
-        # 2) 일반 날짜 행 처리 (A0, B1:양상추재고, C2:양상추투입, D3:양배추재고, E4:양배추투입, F5:적채재고, G6:적채투입)
+        # 2) 날짜 행 (A:날짜, B:양상추재고, C:양상추투입, D:양배추재고, E:양배추투입, F:적채재고, G:적채투입)
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
@@ -205,7 +205,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         b_in = pending_in["yangbaechu"]
         j_in = pending_in["jeokchae"]
 
-        # 누적 대기 수량 초기화
         pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
 
         note = "휴무" if (y_in == 0 and y_use == 0 and b_in == 0 and b_use == 0 and j_in == 0 and j_use == 0 and y_stock == 0 and b_stock == 0 and j_stock == 0) else ""
@@ -215,19 +214,19 @@ def parse_and_convert_to_standard_ledger(excel_file):
                 "date": formatted_date,
                 "yymmdd": yymmdd,
                 "yangsangchu_in": y_in,
-                "yangsangchu_stock": y_stock,
                 "yangsangchu_use": y_use,
+                "yangsangchu_stock": y_stock,
                 "yangbaechu_in": b_in,
-                "yangbaechu_stock": b_stock,
                 "yangbaechu_use": b_use,
+                "yangbaechu_stock": b_stock,
                 "jeokchae_in": j_in,
-                "jeokchae_stock": j_stock,
                 "jeokchae_use": j_use,
+                "jeokchae_stock": j_stock,
                 "note": note,
             }
         )
 
-    # openpyxl 기반 표준 수불부 엑셀 문서 생성
+    # openpyxl 엑셀 생성
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "원재료 수불부"
@@ -274,6 +273,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         c.font = header_font_main
         c.alignment = Alignment(horizontal="center", vertical="center")
 
+    # 올바른 보조 헤더 순서 지정
     sub_headers = ["기초재고", "입고량", "투입량", "기말재고"]
     for start_col in [2, 6, 10]:
         for idx, sub in enumerate(sub_headers):
@@ -303,7 +303,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         for start_col, in_val, use_val, stock_val in items_map:
             end_col_let = get_column_letter(start_col + 3)
 
-            # 첫 행은 (기말재고 + 투입량 - 입고량)을 역산하여 기초재고로 세팅
+            # 첫 행 기초재고 역산 (기말재고 + 투입량 - 입고량)
             if r_idx == start_row:
                 beg_val = max(0.0, stock_val + use_val - in_val)
                 ws.cell(row=r_idx, column=start_col, value=beg_val)
@@ -316,6 +316,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             c_beg = get_column_letter(start_col)
             c_in = get_column_letter(start_col + 1)
             c_use = get_column_letter(start_col + 2)
+            # 수식: =기초재고 + 입고량 - 투입량
             ws.cell(
                 row=r_idx,
                 column=start_col + 3,
@@ -354,7 +355,6 @@ def create_lots_from_standard_ledger(standard_rows):
     if not standard_rows:
         return item_lots
 
-    # 첫 행 역산 기초재고 등록
     first_row = standard_rows[0]
     first_yymmdd = first_row["yymmdd"]
 
@@ -369,7 +369,6 @@ def create_lots_from_standard_ledger(standard_rows):
     if j_beg > 0:
         item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_kg": round(j_beg / 1000.0, 1), "vendor": "K01"})
 
-    # 순수 입고 수량이 입력된 건만 입고 로트로 생성
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
@@ -639,7 +638,7 @@ if excel_file is not None:
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
-                st.success("✅ 정확하게 교정된 수불 구조 기반으로 원료코드 대조가 완료되었습니다!")
+                st.success("✅ 정제된 표준 수불부 기반으로 원료코드 대조 작업이 완료되었습니다!")
 
                 st.dataframe(df_result, use_container_width=True)
 
@@ -674,22 +673,32 @@ if excel_file is not None:
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
 
+            # 표준 순서에 맞게 컬럼 재배치 및 한글화
+            ordered_cols = [
+                "date",
+                "yangsangchu_in", "yangsangchu_use", "yangsangchu_stock",
+                "yangbaechu_in", "yangbaechu_use", "yangbaechu_stock",
+                "jeokchae_in", "jeokchae_use", "jeokchae_stock",
+                "note"
+            ]
+            df_preview = df_preview[[col for col in ordered_cols if col in df_preview.columns]]
+
             korean_column_map = {
                 "date": "일자",
                 "yangsangchu_in": "양상추_입고량",
-                "yangsangchu_stock": "양상추_기말재고",
                 "yangsangchu_use": "양상추_투입량",
+                "yangsangchu_stock": "양상추_기말재고",
                 "yangbaechu_in": "양배추_입고량",
-                "yangbaechu_stock": "양배추_기말재고",
                 "yangbaechu_use": "양배추_투입량",
+                "yangbaechu_stock": "양배추_기말재고",
                 "jeokchae_in": "적채_입고량",
-                "jeokchae_stock": "적채_기말재고",
                 "jeokchae_use": "적채_투입량",
+                "jeokchae_stock": "적채_기말재고",
                 "note": "비고",
             }
             df_preview = df_preview.rename(columns=korean_column_map)
 
-            st.write("▼ 정확하게 교정된 수불부 데이터 미리보기")
+            st.write("▼ [입고량 -> 투입량 -> 기말재고] 순서로 올바르게 정렬된 수불부 데이터 미리보기")
             st.dataframe(df_preview, use_container_width=True)
 
             st.download_button(
