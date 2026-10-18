@@ -1,4 +1,5 @@
 import base64
+import copy
 import io
 import re
 import traceback
@@ -160,8 +161,8 @@ def find_stock_sheet_name(xls):
 def parse_stock_sheet_fifo(xls):
     """
     매입자료 시트 파싱:
-    - B, E, H열 매입 수량이 있는 행만 신규 입고 로트로 등록
-    - 매입 수량이 없는 첫 번째 유효 날짜 행의 재고 수량(C, F, I열)은 이월 기초재고 로트로 등록
+    - B, E, H열 매입 수량이 있는 행만 매입일자 로트로 등록
+    - 첫 번째 유효 데이터 행의 재고(C, F, I열)는 기초재고 로트로 등록
     """
     item_lots = {item: [] for item in item_col_map}
     try:
@@ -259,7 +260,7 @@ def parse_csv_purchase(uploaded_file):
 
 
 def get_latest_purchase_code(item_name, prod_date, df_csv):
-    """2번 파일 수불부(CSV) 기준 최신 매입 코드 추출"""
+    """2번 수불부(CSV) 기준 최신 매입 코드 추출"""
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
     _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
@@ -299,60 +300,18 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
     return f"{p_code}{p_yymmdd}-{v_code}"
 
 
-def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
-    """
-    선입선출(FIFO) 재고 소진 차감 및 코드 조합
-    - 이전 매입분의 잔여 재고를 우선 차감
-    - 잔여 재고 부족 시 다음 매입분 로트를 추가 차감하여 조합 (예: X261001-K01(85.0kg) / X261005-K01(60.0kg))
-    - 프릴/프릴아이스는 매입자료 시트에 없으므로 빈칸("")
-    """
-    lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
-
-    if lookup_item not in item_col_map:
-        return ""
-
-    p_code = prefix_map.get(lookup_item, prefix_map.get(item_name, "X"))
-    _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
-
-    all_lots = item_lots.get(lookup_item, [])
-
-    if not all_lots or req_kg <= 0:
-        return f"{p_code}{p_yymmdd}-K01({round(req_kg, 1)}kg)"
-
-    # 생산일자(p_yymmdd) 이하(이전/당일) 입고된 재고만 사용 가능
-    valid_lots = [lot for lot in all_lots if lot["yymmdd"] <= p_yymmdd]
-
-    remaining = req_kg
-    used_parts = []
-
-    for lot in valid_lots:
-        if remaining <= 0:
-            break
-        if lot["avail_kg"] <= 0:
-            continue
-
-        used = min(lot["avail_kg"], remaining)
-        lot["avail_kg"] -= used
-        remaining -= used
-
-        code = f"{p_code}{lot['yymmdd']}-{lot.get('vendor', 'K01')}"
-        used_parts.append(f"{code}({round(used, 1)}kg)")
-
-    if remaining > 0:
-        latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else p_yymmdd
-        v_code = valid_lots[-1].get("vendor", "K01") if valid_lots else "K01"
-        code = f"{p_code}{latest_yymmdd}-{v_code}"
-        used_parts.append(f"{code}({round(remaining, 1)}kg)[부족]")
-
-    return " / ".join(used_parts)
-
-
 def generate_salad_report(excel_file, csv_file):
     xls = pd.ExcelFile(excel_file)
 
-    item_lots, stock_sheet_name = parse_stock_sheet_fifo(xls)
+    # 1. 매입자료 시트 원본 로트 파싱
+    master_item_lots, stock_sheet_name = parse_stock_sheet_fifo(xls)
+    # 딥 카피를 떠서 순차 차감 시 원본 유지
+    running_item_lots = copy.deepcopy(master_item_lots)
+
+    # 2. 원료 매입 입고자료 / 수불부 파싱
     df_csv = parse_csv_purchase(csv_file)
 
+    # 3. 일자별 생산 시트 순회
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [
         s
@@ -439,6 +398,7 @@ def generate_salad_report(excel_file, csv_file):
 
     df_report = pd.DataFrame(records)
 
+    # 생산일자 및 품목 순서대로 차감 처리
     def process_codes(row):
         item = row["품목"]
         lot = row["작업일지_롯트"]
@@ -448,6 +408,7 @@ def generate_salad_report(excel_file, csv_file):
 
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
+        _, p_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
 
         # 1. 작업일지 기준 코드
         if has_lot:
@@ -458,15 +419,44 @@ def generate_salad_report(excel_file, csv_file):
         else:
             code_worklog = "없음"
 
-        # 2. 수불부 기준 코드 (최근 매입)
+        # 2. 수불부 기준 코드 (CSV 파일 기반)
         code_subul = get_latest_purchase_code(item, prod_date, df_csv)
 
-        # 3. 매입자료 기준 코드 (FIFO 선입선출 차감)
-        code_purchase = consume_fifo_and_format(
-            item, act_kg, prod_date, item_lots, df_csv
-        )
+        # 3. 매입자료 기준 코드 (순차 FIFO 차감)
+        if lookup_item not in item_col_map:
+            code_purchase = ""
+        else:
+            all_lots = running_item_lots.get(lookup_item, [])
+            valid_lots = [lot for lot in all_lots if lot["yymmdd"] <= p_yymmdd]
 
-        # 4. 일치 여부
+            if not valid_lots or act_kg <= 0:
+                code_purchase = f"{p}{p_yymmdd}-K01({round(act_kg, 1)}kg)"
+            else:
+                remaining = act_kg
+                used_parts = []
+
+                for lot_item in valid_lots:
+                    if remaining <= 0:
+                        break
+                    if lot_item["avail_kg"] <= 0:
+                        continue
+
+                    used = min(lot_item["avail_kg"], remaining)
+                    lot_item["avail_kg"] -= used
+                    remaining -= used
+
+                    code_str = f"{p}{lot_item['yymmdd']}-{lot_item.get('vendor', 'K01')}"
+                    used_parts.append(f"{code_str}({round(used, 1)}kg)")
+
+                if remaining > 0:
+                    latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else p_yymmdd
+                    v_code = valid_lots[-1].get("vendor", "K01") if valid_lots else "K01"
+                    code_str = f"{p}{latest_yymmdd}-{v_code}"
+                    used_parts.append(f"{code_str}({round(remaining, 1)}kg)[부족]")
+
+                code_purchase = " / ".join(used_parts)
+
+        # 4. 일치 여부 판정
         if code_worklog != "없음" and code_purchase != "" and code_worklog in code_purchase:
             is_match = "일치"
         elif code_worklog != "없음" and code_purchase == "" and code_worklog == code_subul:
