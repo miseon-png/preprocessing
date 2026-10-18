@@ -240,11 +240,11 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # --- FIFO 기반 투입 소진 출처 상세 추적 및 일일 준비량 집계 ---
+    # --- 일일 생산일지 시트로부터 항목별 준비량 및 투입량 추출 ---
     exclude_sheets = ["테스트", "원가", stock_sheet, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
     
-    prep_by_date = {}
+    daily_usage_by_date = {}
     for sheet in daily_sheets:
         try:
             df_s = pd.read_excel(xls, sheet_name=sheet)
@@ -256,11 +256,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
             
             items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
             prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
+            actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]]
 
-            if formatted_p_date not in prep_by_date:
-                prep_by_date[formatted_p_date] = {"양상추": 0.0, "양배추": 0.0, "적채": 0.0, "프릴": 0.0}
+            if formatted_p_date not in daily_usage_by_date:
+                daily_usage_by_date[formatted_p_date] = {
+                    "양상추": {"prep": 0.0, "use": 0.0},
+                    "양배추": {"prep": 0.0, "use": 0.0},
+                    "적채": {"prep": 0.0, "use": 0.0},
+                    "프릴아이스": {"prep": 0.0, "use": 0.0},
+                }
 
-            for itm, prp in zip(items, prep_pck):
+            for itm, prp, act in zip(items, prep_pck, actual_input):
                 if pd.isna(itm):
                     continue
                 itm_str = str(itm).strip()
@@ -269,9 +275,24 @@ def parse_and_convert_to_standard_ledger(excel_file):
                 except (ValueError, TypeError):
                     prp_val = 0.0
 
-                for k in prep_by_date[formatted_p_date].keys():
-                    if k in itm_str:
-                        prep_by_date[formatted_p_date][k] += prp_val
+                try:
+                    act_val = float(act) if pd.notna(act) else 0.0
+                except (ValueError, TypeError):
+                    act_val = 0.0
+
+                matched_key = None
+                if "양상추" in itm_str:
+                    matched_key = "양상추"
+                elif "양배추" in itm_str:
+                    matched_key = "양배추"
+                elif "적채" in itm_str:
+                    matched_key = "적채"
+                elif "프릴" in itm_str:
+                    matched_key = "프릴아이스"
+
+                if matched_key:
+                    daily_usage_by_date[formatted_p_date][matched_key]["prep"] += prp_val
+                    daily_usage_by_date[formatted_p_date][matched_key]["use"] += act_val
         except Exception:
             continue
 
@@ -287,6 +308,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     data_rows = []
     generated_code_rows = []
+
+    # 지정하신 원재료 출력 우선순위 [양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스]
+    target_items_order = ["양상추", "양배추", "적채", "프릴아이스"]
 
     for row in raw_data_rows:
         row_copy = copy.deepcopy(row)
@@ -334,25 +358,37 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # Tab 3 전용 행 수집: [일자 | 원재료 | 생성코드 | 준비량 | 투입량 | 소진매입일 | 비고] 구조로 세로 정렬
-        date_prep = prep_by_date.get(row["date"], {"양상추": 0.0, "양배추": 0.0, "적채": 0.0})
+        # Tab 3: 지정된 순서대로 [양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스] 정렬하여 행 구성
+        date_usage = daily_usage_by_date.get(
+            row["date"],
+            {
+                "양상추": {"prep": 0.0, "use": row["yangsangchu_use"]},
+                "양배추": {"prep": 0.0, "use": row["yangbaechu_use"]},
+                "적채": {"prep": 0.0, "use": row["jeokchae_use"]},
+                "프릴아이스": {"prep": 0.0, "use": 0.0},
+            },
+        )
 
-        items_info = [
-            ("양상추", row["yangsangchu_use"], date_prep["양상추"], y_code, y_src),
-            ("양배추", row["yangbaechu_use"], date_prep["양배추"], b_code, b_src),
-            ("적채", row["jeokchae_use"], date_prep["적채"], j_code, j_src),
-        ]
+        code_map = {"양상추": y_code, "양배추": b_code, "적채": j_code, "프릴아이스": f"F{row['yymmdd']}-F01"}
+        src_map = {"양상추": y_src, "양배추": b_src, "적채": j_src, "프릴아이스": f"{row['yymmdd']} 매입"}
 
-        for item_name, use_val, prep_val, code_val, src_val in items_info:
+        for item_name in target_items_order:
+            info = date_usage.get(item_name, {"prep": 0.0, "use": 0.0})
+            use_val = info["use"] if info["use"] > 0 else (row["yangsangchu_use"] if item_name == "양상추" else (row["yangbaechu_use"] if item_name == "양배추" else (row["jeokchae_use"] if item_name == "적채" else 0.0)))
+            prep_val = info["prep"]
+
             if use_val > 0 or prep_val > 0:
+                c_val = code_map.get(item_name, "-")
+                s_val = src_map.get(item_name, "-")
+                
                 generated_code_rows.append(
                     {
                         "날짜": row["date"],
                         "원재료": item_name,
-                        "생성코드": code_val if use_val > 0 else "-",
+                        "생성코드": c_val if use_val > 0 else "-",
                         "준비량(kg)": round(prep_val / 1000.0, 1),
                         "투입량(kg)": round(use_val / 1000.0, 1),
-                        "소진매입일(상세)": src_val,
+                        "소진매입일(상세)": s_val,
                         "비고": row["note"],
                     }
                 )
@@ -837,12 +873,12 @@ if excel_file is not None:
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
-                "**구조**: `날짜` | `원재료` | `생성코드` | `준비량(kg)` | `투입량(kg)` | `소진매입일(상세)` | `비고`"
+                "**구조**: `날짜` | `원재료` | `생성코드` | `준비량(kg)` | `투입량(kg)` | `소진매입일(상세)` | `비고`  \n"
+                "**정렬**: 양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스 순"
             )
 
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
-                # 지정하신 순서대로 컬럼 배치 [날짜 | 원재료 | 생성코드 | 준비량(kg) | 투입량(kg) | 소진매입일(상세) | 비고]
                 column_order = [
                     "날짜",
                     "원재료",
@@ -853,6 +889,11 @@ if excel_file is not None:
                     "비고",
                 ]
                 df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
+
+                # 원재료 지정 순서 커스텀 정렬
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
+                df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
+                df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
 
                 st.dataframe(df_code_summary, use_container_width=True)
 
