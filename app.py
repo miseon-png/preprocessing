@@ -155,7 +155,7 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# 올바른 순서 적용: 기초재고 -> 입고량 -> 투입량 -> 기말재고
+# 정제 함수: 매입자료 시트를 표준 원재료 수불 데이터 구조로 변환
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -188,7 +188,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             pending_in["jeokchae"] += parse_num(row.iloc[5]) if len(row) > 5 else 0.0
             continue
 
-        # 2) 날짜 행 (A:날짜, B:양상추재고, C:양상추투입, D:양배추재고, E:양배추투입, F:적채재고, G:적채투입)
+        # 2) 일반 날짜 행 (A:날짜, B:양상추재고, C:양상추투입, D:양배추재고, E:양배추투입, F:적채재고, G:적채투입)
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
@@ -273,7 +273,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         c.font = header_font_main
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    # 올바른 보조 헤더 순서 지정
     sub_headers = ["기초재고", "입고량", "투입량", "기말재고"]
     for start_col in [2, 6, 10]:
         for idx, sub in enumerate(sub_headers):
@@ -349,12 +348,16 @@ def parse_and_convert_to_standard_ledger(excel_file):
     return buffer.getvalue(), data_rows, stock_sheet
 
 
+# ---------------------------------------------------------
+# 표준 수불부 기반 FIFO 입고 큐 생성 함수
+# ---------------------------------------------------------
 def create_lots_from_standard_ledger(standard_rows):
     item_lots = {"양상추": [], "양배추": [], "적채": []}
 
     if not standard_rows:
         return item_lots
 
+    # 1) 첫 행 기초 이월 재고 등록
     first_row = standard_rows[0]
     first_yymmdd = first_row["yymmdd"]
 
@@ -369,6 +372,7 @@ def create_lots_from_standard_ledger(standard_rows):
     if j_beg > 0:
         item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_kg": round(j_beg / 1000.0, 1), "vendor": "K01"})
 
+    # 2) 실제 신규 입고 수량(양상추_in, 양배추_in, 적채_in)이 입력된 행만 입고 로트로 등록
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
@@ -446,6 +450,7 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
+    # 표준 수불부 기반 순수 입고 로트 큐 생성 및 딥 카피
     master_item_lots = create_lots_from_standard_ledger(standard_rows)
     running_item_lots = copy.deepcopy(master_item_lots)
 
@@ -673,7 +678,6 @@ if excel_file is not None:
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
 
-            # 표준 순서에 맞게 컬럼 재배치 및 한글화
             ordered_cols = [
                 "date",
                 "yangsangchu_in", "yangsangchu_use", "yangsangchu_stock",
