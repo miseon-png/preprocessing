@@ -155,7 +155,7 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# [핵심 1] 탭 2 표준 수불부 정제 엔진
+# 매입자료 시트를 파싱하고 FIFO 투입 소진 추적 열까지 생성하는 정제 함수
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -172,7 +172,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             return 0.0
 
     pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
-    data_rows = []
+    raw_data_rows = []
     is_first_row = True
 
     for idx, row in df_raw.iterrows():
@@ -184,14 +184,12 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if not a_val or a_val.lower() == "nan" or "날짜" in a_val or "매입" in a_val:
             continue
 
-        # 1) 입고 행
         if "입고" in a_val:
             pending_in["yangsangchu"] += parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
             pending_in["yangbaechu"] += parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
             pending_in["jeokchae"] += parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
             continue
 
-        # 2) 날짜 행
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
@@ -222,7 +220,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         note = "휴무" if (y_in == 0 and y_use == 0 and b_in == 0 and b_use == 0 and j_in == 0 and j_use == 0 and y_stock == 0 and b_stock == 0 and j_stock == 0) else ""
 
-        data_rows.append(
+        raw_data_rows.append(
             {
                 "date": formatted_date,
                 "yymmdd": yymmdd,
@@ -242,15 +240,65 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # openpyxl 엑셀 생성
+    # --- FIFO 기반 투입 소진 출처 상세 추적 ---
+    item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
+    if raw_data_rows:
+        f_row = raw_data_rows[0]
+        if f_row["yangsangchu_beg"] > 0:
+            item_queues["yangsangchu"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangsangchu_beg"]})
+        if f_row["yangbaechu_beg"] > 0:
+            item_queues["yangbaechu"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangbaechu_beg"]})
+        if f_row["jeokchae_beg"] > 0:
+            item_queues["jeokchae"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["jeokchae_beg"]})
+
+    data_rows = []
+    for row in raw_data_rows:
+        row_copy = copy.deepcopy(row)
+        mmdd_str = f"{row['yymmdd'][2:4]}/{row['yymmdd'][4:]}"
+
+        # 신규 입고 수량을 큐에 추가
+        if row["yangsangchu_in"] > 0:
+            item_queues["yangsangchu"].append({"label": f"{mmdd_str} 매입", "avail": row["yangsangchu_in"]})
+        if row["yangbaechu_in"] > 0:
+            item_queues["yangbaechu"].append({"label": f"{mmdd_str} 매입", "avail": row["yangbaechu_in"]})
+        if row["jeokchae_in"] > 0:
+            item_queues["jeokchae"].append({"label": f"{mmdd_str} 매입", "avail": row["jeokchae_in"]})
+
+        # 품목별 소진 내역 추적 함수
+        def trace_usage(item_key, use_amount):
+            if use_amount <= 0:
+                return "-"
+            rem = use_amount
+            used_list = []
+            for lot in item_queues[item_key]:
+                if rem <= 0:
+                    break
+                if lot["avail"] <= 0:
+                    continue
+                u = min(lot["avail"], rem)
+                lot["avail"] -= u
+                rem -= u
+                used_list.append(f"{lot['label']}({round(u/1000.0, 1)}kg)")
+
+            if rem > 0:
+                used_list.append(f"부족({round(rem/1000.0, 1)}kg)")
+            return " / ".join(used_list)
+
+        row_copy["yangsangchu_source"] = trace_usage("yangsangchu", row["yangsangchu_use"])
+        row_copy["yangbaechu_source"] = trace_usage("yangbaechu", row["yangbaechu_use"])
+        row_copy["jeokchae_source"] = trace_usage("jeokchae", row["jeokchae_use"])
+
+        data_rows.append(row_copy)
+
+    # --- openpyxl 엑셀 생성 (투입 소진 내역 열 포함 17개 컬럼) ---
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "원재료 수불부"
     ws.views.sheetView[0].showGridLines = True
 
-    ws.merge_cells("A1:N1")
+    ws.merge_cells("A1:Q1")
     title_cell = ws["A1"]
-    title_cell.value = "원재료 수불부 (Raw Material Inventory Ledger)"
+    title_cell.value = "원재료 수불부 (Raw Material Inventory Ledger - 소진 추적 포함)"
     title_cell.font = Font(name="맑은 고딕", size=16, bold=True, color="1F4E79")
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 35
@@ -273,24 +321,24 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     headers_main = [
         ("A2:A3", "일자"),
-        ("B2:E2", "양상추"),
-        ("F2:I2", "양배추"),
-        ("J2:M2", "적채"),
-        ("N2:N3", "비고"),
+        ("B2:F2", "양상추"),
+        ("G2:K2", "양배추"),
+        ("L2:P2", "적채"),
+        ("Q2:Q3", "비고"),
     ]
     for cell_range, title in headers_main:
         ws.merge_cells(cell_range)
         top_left = cell_range.split(":")[0]
         ws[top_left] = title
 
-    for col_idx in range(1, 15):
+    for col_idx in range(1, 18):
         c = ws.cell(row=2, column=col_idx)
         c.fill = header_fill_main
         c.font = header_font_main
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    sub_headers = ["기초재고", "입고량", "투입량", "기말재고"]
-    for start_col in [2, 6, 10]:
+    sub_headers = ["기초재고", "입고량", "투입량", "소진 매입일자(상세)", "기말재고"]
+    for start_col in [2, 7, 12]:
         for idx, sub in enumerate(sub_headers):
             c = ws.cell(row=3, column=start_col + idx, value=sub)
             c.fill = header_fill_sub
@@ -302,21 +350,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     start_row = 4
     for r_idx, item in enumerate(data_rows, start=start_row):
-        ws.cell(row=r_idx, column=1, value=item["date"]).alignment = Alignment(
-            horizontal="center", vertical="center"
-        )
-        ws.cell(row=r_idx, column=14, value=item.get("note", "")).alignment = Alignment(
-            horizontal="left", vertical="center"
-        )
+        ws.cell(row=r_idx, column=1, value=item["date"]).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=r_idx, column=17, value=item.get("note", "")).alignment = Alignment(horizontal="left", vertical="center")
 
         items_map = [
-            (2, item.get("yangsangchu_beg", 0), item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0)),
-            (6, item.get("yangbaechu_beg", 0), item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0)),
-            (10, item.get("jeokchae_beg", 0), item.get("jeokchae_in", 0), item.get("jeokchae_use", 0)),
+            (2, item.get("yangsangchu_beg", 0), item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0), item.get("yangsangchu_source", "-")),
+            (7, item.get("yangbaechu_beg", 0), item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0), item.get("yangbaechu_source", "-")),
+            (12, item.get("jeokchae_beg", 0), item.get("jeokchae_in", 0), item.get("jeokchae_use", 0), item.get("jeokchae_source", "-")),
         ]
 
-        for start_col, beg_val, in_val, use_val in items_map:
-            end_col_let = get_column_letter(start_col + 3)
+        for start_col, beg_val, in_val, use_val, source_str in items_map:
+            end_col_let = get_column_letter(start_col + 4)
 
             if r_idx == start_row:
                 ws.cell(row=r_idx, column=start_col, value=beg_val)
@@ -325,22 +369,19 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
             ws.cell(row=r_idx, column=start_col + 1, value=in_val)
             ws.cell(row=r_idx, column=start_col + 2, value=use_val)
+            ws.cell(row=r_idx, column=start_col + 3, value=source_str).alignment = Alignment(horizontal="center", vertical="center")
 
             c_beg = get_column_letter(start_col)
             c_in = get_column_letter(start_col + 1)
             c_use = get_column_letter(start_col + 2)
-            ws.cell(
-                row=r_idx,
-                column=start_col + 3,
-                value=f"={c_beg}{r_idx}+{c_in}{r_idx}-{c_use}{r_idx}",
-            )
+            ws.cell(row=r_idx, column=start_col + 4, value=f"={c_beg}{r_idx}+{c_in}{r_idx}-{c_use}{r_idx}")
 
         is_rest = "휴무" in item.get("note", "")
-        for c_idx in range(1, 15):
+        for c_idx in range(1, 18):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.font = regular_font
             cell.border = thin_border
-            if 2 <= c_idx <= 13:
+            if c_idx in [2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16]:
                 cell.number_format = "#,##0"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
@@ -354,7 +395,10 @@ def parse_and_convert_to_standard_ledger(excel_file):
     for col in ws.columns:
         col_letter = get_column_letter(col[0].column)
         ws.column_dimensions[col_letter].width = 13
-    ws.column_dimensions["N"].width = 16
+    ws.column_dimensions["E"].width = 28
+    ws.column_dimensions["J"].width = 28
+    ws.column_dimensions["O"].width = 28
+    ws.column_dimensions["Q"].width = 16
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -362,7 +406,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
 
 # ---------------------------------------------------------
-# [핵심 2] 정제된 탭 2 수불부 기반으로 탭 1 대조용 입고 큐 생성
+# 정제 수불부 기반으로 대조표 로트 큐 생성
 # ---------------------------------------------------------
 def create_lots_from_standard_ledger(standard_rows):
     item_lots = {"양상추": [], "양배추": [], "적채": []}
@@ -370,7 +414,6 @@ def create_lots_from_standard_ledger(standard_rows):
     if not standard_rows:
         return item_lots
 
-    # 1) 기초 이월 재고
     first_row = standard_rows[0]
     first_yymmdd = first_row["yymmdd"]
 
@@ -381,7 +424,6 @@ def create_lots_from_standard_ledger(standard_rows):
     if first_row["jeokchae_beg"] > 0:
         item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": first_row["jeokchae_beg"], "vendor": "K01"})
 
-    # 2) 순수 입고 수량이 존재하는 행만 입고 로트로 등록
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
@@ -456,9 +498,6 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
     return f"{p_code}{p_yymmdd}-{v_code}"
 
 
-# ---------------------------------------------------------
-# [핵심 3] 정제된 탭 2 수불 데이터 기반으로 대조표 생성
-# ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
@@ -650,13 +689,12 @@ tab1, tab2 = st.tabs(["🔍 원료코드 대조표 (자동 연동)", "📊 표�
 
 if excel_file is not None:
     try:
-        # [연동 핵심] 탭 2의 정제 수불 데이터를 1회 생성하여 탭 1과 탭 2에 공동 적용
         excel_bytes, standard_rows, stock_sheet_name = parse_and_convert_to_standard_ledger(excel_file)
 
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
-                st.success("✅ 탭 2 정제 수불부 연동으로 원료코드 대조가 완료되었습니다!")
+                st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
 
                 st.dataframe(df_result, use_container_width=True)
 
@@ -682,9 +720,9 @@ if excel_file is not None:
                 st.caption("💡 Tip: 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
 
         with tab2:
-            st.subheader("📋 표준 원재료 수불부 자동 생성")
+            st.subheader("📋 표준 원재료 수불부 자동 생성 (투입 소진 매입일자 추적)")
             st.write(
-                "기존 매입자료 시트를 **[일자 | 기초재고 | 입고량 | 투입량 | 기말재고]** 구조의 깨끗한 표준 수불부 엑셀 문서로 정제해 드립니다."
+                "기존 매입자료 시트를 **[일자 | 기초재고 | 입고량 | 투입량 | 소진 매입일자(상세) | 기말재고]** 구조의 깨끗한 표준 수불부 엑셀 문서로 정제해 드립니다."
             )
 
             df_preview = pd.DataFrame(standard_rows)
@@ -693,9 +731,9 @@ if excel_file is not None:
 
             ordered_cols = [
                 "date",
-                "yangsangchu_in", "yangsangchu_use", "yangsangchu_stock",
-                "yangbaechu_in", "yangbaechu_use", "yangbaechu_stock",
-                "jeokchae_in", "jeokchae_use", "jeokchae_stock",
+                "yangsangchu_in", "yangsangchu_use", "yangsangchu_source", "yangsangchu_stock",
+                "yangbaechu_in", "yangbaechu_use", "yangbaechu_source", "yangbaechu_stock",
+                "jeokchae_in", "jeokchae_use", "jeokchae_source", "jeokchae_stock",
                 "note"
             ]
             df_preview = df_preview[[col for col in ordered_cols if col in df_preview.columns]]
@@ -704,24 +742,27 @@ if excel_file is not None:
                 "date": "일자",
                 "yangsangchu_in": "양상추_입고량",
                 "yangsangchu_use": "양상추_투입량",
+                "yangsangchu_source": "양상추_소진 매입일자(상세)",
                 "yangsangchu_stock": "양상추_기말재고",
                 "yangbaechu_in": "양배추_입고량",
                 "yangbaechu_use": "양배추_투입량",
+                "yangbaechu_source": "양배추_소진 매입일자(상세)",
                 "yangbaechu_stock": "양배추_기말재고",
                 "jeokchae_in": "적채_입고량",
                 "jeokchae_use": "적채_투입량",
+                "jeokchae_source": "적채_소진 매입일자(상세)",
                 "jeokchae_stock": "적채_기말재고",
                 "note": "비고",
             }
             df_preview = df_preview.rename(columns=korean_column_map)
 
-            st.write("▼ [입고량 -> 투입량 -> 기말재고] 정렬 수불부 미리보기")
+            st.write("▼ [입고량 ➔ 투입량 ➔ 소진 매입일자(상세) ➔ 기말재고] 수불부 미리보기")
             st.dataframe(df_preview, use_container_width=True)
 
             st.download_button(
                 label="📥 정리된 표준 원재료 수불부 엑셀 다운로드 (.xlsx)",
                 data=excel_bytes,
-                file_name="표준_원재료_수불부.xlsx",
+                file_name="표준_원재료_수불부(소진추적포함).xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
