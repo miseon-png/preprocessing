@@ -240,7 +240,41 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # --- FIFO 기반 투입 소진 출처 상세 추적 및 코드 조합 생성 ---
+    # --- FIFO 기반 투입 소진 출처 상세 추적 및 일일 준비량 집계 ---
+    exclude_sheets = ["테스트", "원가", stock_sheet, "Sheet1", "sheet1"]
+    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
+    
+    prep_by_date = {}
+    for sheet in daily_sheets:
+        try:
+            df_s = pd.read_excel(xls, sheet_name=sheet)
+            if df_s.shape[0] < 5 or df_s.shape[1] < 14:
+                continue
+            p_date_raw = df_s.iloc[0, 0]
+            _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
+            formatted_p_date = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
+            
+            items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
+            prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
+
+            if formatted_p_date not in prep_by_date:
+                prep_by_date[formatted_p_date] = {"양상추": 0.0, "양배추": 0.0, "적채": 0.0, "프릴": 0.0}
+
+            for itm, prp in zip(items, prep_pck):
+                if pd.isna(itm):
+                    continue
+                itm_str = str(itm).strip()
+                try:
+                    prp_val = float(prp) if pd.notna(prp) else 0.0
+                except (ValueError, TypeError):
+                    prp_val = 0.0
+
+                for k in prep_by_date[formatted_p_date].keys():
+                    if k in itm_str:
+                        prep_by_date[formatted_p_date][k] += prp_val
+        except Exception:
+            continue
+
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     if raw_data_rows:
         f_row = raw_data_rows[0]
@@ -300,18 +334,23 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # 원료코드 생성탭 전용 행 수집
+        # Tab 3 전용 행 수집: 준비량 컬럼 추가
+        date_prep = prep_by_date.get(row["date"], {"양상추": 0.0, "양배추": 0.0, "적채": 0.0})
+        
         if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
             generated_code_rows.append(
                 {
                     "생산일자": row["date"],
                     "양상추 투입(kg)": round(row["yangsangchu_use"] / 1000.0, 1),
+                    "양상추 준비량(kg)": round(date_prep["양상추"] / 1000.0, 1),
                     "양상추 소진매입일": y_src,
                     "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
                     "양배추 투입(kg)": round(row["yangbaechu_use"] / 1000.0, 1),
+                    "양배추 준비량(kg)": round(date_prep["양배추"] / 1000.0, 1),
                     "양배추 소진매입일": b_src,
                     "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
                     "적채 투입(kg)": round(row["jeokchae_use"] / 1000.0, 1),
+                    "적채 준비량(kg)": round(date_prep["적채"] / 1000.0, 1),
                     "적채 소진매입일": j_src,
                     "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
                     "비고": row["note"],
@@ -794,7 +833,7 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 신규 추가! 원료코드 생성 및 일자별 정리 ---
+        # --- Tab 3: 원료코드 생성 및 일자별 정리 (준비량 추가 완료!) ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
