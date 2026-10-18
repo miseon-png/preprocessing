@@ -309,8 +309,8 @@ def parse_and_convert_to_standard_ledger(excel_file):
     data_rows = []
     generated_code_rows = []
 
-    # 지정하신 원재료 출력 우선순위 [양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스]
-    target_items_order = ["양상추", "양배추", "적채", "프릴아이스"]
+    # 3번째 탭 출력 대상에서 '프릴아이스'를 제외하고 [양상추 ➔ 양배추 ➔ 적채] 만 설정
+    target_items_order = ["양상추", "양배추", "적채"]
 
     for row in raw_data_rows:
         row_copy = copy.deepcopy(row)
@@ -369,8 +369,8 @@ def parse_and_convert_to_standard_ledger(excel_file):
             },
         )
 
-        code_map = {"양상추": y_code, "양배추": b_code, "적채": j_code, "프릴아이스": f"F{row['yymmdd']}-F01"}
-        src_map = {"양상추": y_src, "양배추": b_src, "적채": j_src, "프릴아이스": f"{row['yymmdd']} 매입"}
+        code_map = {"양상추": y_code, "양배추": b_code, "적채": j_code}
+        src_map = {"양상추": y_src, "양배추": b_src, "적채": j_src}
 
         for item_name in target_items_order:
             info = date_usage.get(item_name, {"prep": 0.0, "use": 0.0})
@@ -869,17 +869,16 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 및 일자별 정리 (요청된 컬럼 순서 적용) ---
+        # --- Tab 3: 원료코드 생성 및 일자별 정리 (프릴아이스 제외) ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
                 "**구조**: `날짜` | `원재료` | `생성코드` | `투입량(kg)` | `준비량(kg)` | `소진매입일(상세)` | `비고` \n"
-                "**정렬**: 양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스 순"
+                "**정렬**: 양상추 ➔ 양배추 ➔ 적채 순"
             )
 
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
-                # 요청하신 순서대로 정확히 지정: 날짜 | 원재료 | 생성코드 | 투입량(kg) | 준비량(kg) | 소진매입일(상세) | 비고
                 column_order = [
                     "날짜",
                     "원재료",
@@ -891,8 +890,8 @@ if excel_file is not None:
                 ]
                 df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
 
-                # 원재료 지정 순서 커스텀 정렬
-                item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
+                # 원재료 지정 순서 커스텀 정렬 (양상추 ➔ 양배추 ➔ 적채)
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
                 df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
                 df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
 
