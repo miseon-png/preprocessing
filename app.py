@@ -155,7 +155,7 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# 정제 함수: 매입자료 시트를 표준 원재료 수불 데이터 구조로 변환
+# 매입자료 시트를 정확한 g(그램) 단위 수불 데이터로 정제
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -181,14 +181,14 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if not a_val or a_val.lower() == "nan" or "날짜" in a_val or "매입" in a_val:
             continue
 
-        # 1) '입고' 행
+        # 1) '입고' 행 (g 단위)
         if "입고" in a_val:
             pending_in["yangsangchu"] += parse_num(row.iloc[1]) if len(row) > 1 else 0.0
             pending_in["yangbaechu"] += parse_num(row.iloc[3]) if len(row) > 3 else 0.0
             pending_in["jeokchae"] += parse_num(row.iloc[5]) if len(row) > 5 else 0.0
             continue
 
-        # 2) 일반 날짜 행 (A:날짜, B:양상추재고, C:양상추투입, D:양배추재고, E:양배추투입, F:적채재고, G:적채투입)
+        # 2) 일반 날짜 행 (g 단위)
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
@@ -302,7 +302,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         for start_col, in_val, use_val, stock_val in items_map:
             end_col_let = get_column_letter(start_col + 3)
 
-            # 첫 행 기초재고 역산 (기말재고 + 투입량 - 입고량)
+            # 첫 행 기초재고 역산 (g 단위 원본 유지)
             if r_idx == start_row:
                 beg_val = max(0.0, stock_val + use_val - in_val)
                 ws.cell(row=r_idx, column=start_col, value=beg_val)
@@ -315,7 +315,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
             c_beg = get_column_letter(start_col)
             c_in = get_column_letter(start_col + 1)
             c_use = get_column_letter(start_col + 2)
-            # 수식: =기초재고 + 입고량 - 투입량
             ws.cell(
                 row=r_idx,
                 column=start_col + 3,
@@ -349,7 +348,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
 
 # ---------------------------------------------------------
-# 표준 수불부 기반 FIFO 입고 큐 생성 함수
+# 표준 수불부 기반 g(그램) 수량 입고 큐 생성
 # ---------------------------------------------------------
 def create_lots_from_standard_ledger(standard_rows):
     item_lots = {"양상추": [], "양배추": [], "적채": []}
@@ -357,7 +356,7 @@ def create_lots_from_standard_ledger(standard_rows):
     if not standard_rows:
         return item_lots
 
-    # 1) 첫 행 기초 이월 재고 등록
+    # 1) 첫 행 기초 이월 재고 (g 단위)
     first_row = standard_rows[0]
     first_yymmdd = first_row["yymmdd"]
 
@@ -366,21 +365,21 @@ def create_lots_from_standard_ledger(standard_rows):
     j_beg = max(0.0, first_row["jeokchae_stock"] + first_row["jeokchae_use"] - first_row["jeokchae_in"])
 
     if y_beg > 0:
-        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_kg": round(y_beg / 1000.0, 1), "vendor": "K01"})
+        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_g": y_beg, "vendor": "K01"})
     if b_beg > 0:
-        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_kg": round(b_beg / 1000.0, 1), "vendor": "K01"})
+        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_g": b_beg, "vendor": "K01"})
     if j_beg > 0:
-        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_kg": round(j_beg / 1000.0, 1), "vendor": "K01"})
+        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": j_beg, "vendor": "K01"})
 
-    # 2) 실제 신규 입고 수량(양상추_in, 양배추_in, 적채_in)이 입력된 행만 입고 로트로 등록
+    # 2) 실제 입고 수량 (g 단위)
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
-            item_lots["양상추"].append({"yymmdd": yymmdd, "avail_kg": round(row["yangsangchu_in"] / 1000.0, 1), "vendor": "K01"})
+            item_lots["양상추"].append({"yymmdd": yymmdd, "avail_g": row["yangsangchu_in"], "vendor": "K01"})
         if row["yangbaechu_in"] > 0:
-            item_lots["양배추"].append({"yymmdd": yymmdd, "avail_kg": round(row["yangbaechu_in"] / 1000.0, 1), "vendor": "K01"})
+            item_lots["양배추"].append({"yymmdd": yymmdd, "avail_g": row["yangbaechu_in"], "vendor": "K01"})
         if row["jeokchae_in"] > 0:
-            item_lots["적채"].append({"yymmdd": yymmdd, "avail_kg": round(row["jeokchae_in"] / 1000.0, 1), "vendor": "K01"})
+            item_lots["적채"].append({"yymmdd": yymmdd, "avail_g": row["jeokchae_in"], "vendor": "K01"})
 
     return item_lots
 
@@ -450,7 +449,6 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
-    # 표준 수불부 기반 순수 입고 로트 큐 생성 및 딥 카피
     master_item_lots = create_lots_from_standard_ledger(standard_rows)
     running_item_lots = copy.deepcopy(master_item_lots)
 
@@ -531,7 +529,8 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                         "prod_yymmdd": prod_yymmdd,
                         "품목": str(item).strip(),
                         "작업일지_롯트": lot_str if has_lot else "없음",
-                        "실투입 양 (kg)": round(a_val / 1000.0, 1),
+                        "act_g": a_val,  # g 단위 원본 수량
+                        "실투입 양 (kg)": round(a_val / 1000.0, 1),  # 대조표 표시용 kg
                         "준비 양 (kg)": round(p_val / 1000.0, 1),
                         "has_lot": has_lot,
                     }
@@ -552,7 +551,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
         has_lot = rec["has_lot"]
         prod_date = rec["생산일자"]
         prod_yymmdd = rec["prod_yymmdd"]
-        act_kg = rec["실투입 양 (kg)"]
+        act_g = rec["act_g"]
 
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
@@ -573,30 +572,31 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             all_lots = running_item_lots.get(lookup_item, [])
             valid_lots = [l for l in all_lots if l["yymmdd"] <= prod_yymmdd]
 
-            if not valid_lots or act_kg <= 0:
-                code_purchase = f"{p}{prod_yymmdd}-K01({round(act_kg, 1)}kg)"
+            if not valid_lots or act_g <= 0:
+                code_purchase = f"{p}{prod_yymmdd}-K01({round(act_g / 1000.0, 1)}kg)"
             else:
-                remaining = act_kg
+                remaining = act_g
                 used_parts = []
 
                 for lot_item in valid_lots:
                     if remaining <= 0:
                         break
-                    if lot_item["avail_kg"] <= 0:
+                    if lot_item["avail_g"] <= 0:
                         continue
 
-                    used = min(lot_item["avail_kg"], remaining)
-                    lot_item["avail_kg"] -= used
+                    used = min(lot_item["avail_g"], remaining)
+                    lot_item["avail_g"] -= used
                     remaining -= used
 
                     code_str = f"{p}{lot_item['yymmdd']}-{lot_item.get('vendor', 'K01')}"
-                    used_parts.append(f"{code_str}({round(used, 1)}kg)")
+                    # 대조표 표시 시 g 수량을 kg으로 변환하여 출력
+                    used_parts.append(f"{code_str}({round(used / 1000.0, 1)}kg)")
 
                 if remaining > 0:
                     latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else prod_yymmdd
                     v_code = valid_lots[-1].get("vendor", "K01") if valid_lots else "K01"
                     code_str = f"{p}{latest_yymmdd}-{v_code}"
-                    used_parts.append(f"{code_str}({round(remaining, 1)}kg)[부족]")
+                    used_parts.append(f"{code_str}({round(remaining / 1000.0, 1)}kg)[부족]")
 
                 code_purchase = " / ".join(used_parts)
 
@@ -643,7 +643,7 @@ if excel_file is not None:
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
-                st.success("✅ 정제된 표준 수불부 기반으로 원료코드 대조 작업이 완료되었습니다!")
+                st.success("✅ 정확하게 교정된 g 단위 수불 구조 기반으로 원료코드 대조가 완료되었습니다!")
 
                 st.dataframe(df_result, use_container_width=True)
 
@@ -702,7 +702,7 @@ if excel_file is not None:
             }
             df_preview = df_preview.rename(columns=korean_column_map)
 
-            st.write("▼ [입고량 -> 투입량 -> 기말재고] 순서로 올바르게 정렬된 수불부 데이터 미리보기")
+            st.write("▼ [입고량 -> 투입량 -> 기말재고] 정렬 수불부 미리보기")
             st.dataframe(df_preview, use_container_width=True)
 
             st.download_button(
