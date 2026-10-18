@@ -155,14 +155,16 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# 매입자료 시트를 정확한 g(그램) 단위 수불 데이터로 정제
+# [핵심 1] 탭 2 표준 수불부 정제 엔진
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
     stock_sheet = find_stock_sheet_name(xls)
     df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
-    def parse_num(val):
+    def parse_cell(val):
+        if pd.isna(val):
+            return 0.0
         try:
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
@@ -171,6 +173,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
     data_rows = []
+    is_first_row = True
 
     for idx, row in df_raw.iterrows():
         if len(row) == 0 or pd.isna(row.iloc[0]):
@@ -181,25 +184,25 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if not a_val or a_val.lower() == "nan" or "날짜" in a_val or "매입" in a_val:
             continue
 
-        # 1) '입고' 행 (g 단위)
+        # 1) 입고 행
         if "입고" in a_val:
-            pending_in["yangsangchu"] += parse_num(row.iloc[1]) if len(row) > 1 else 0.0
-            pending_in["yangbaechu"] += parse_num(row.iloc[3]) if len(row) > 3 else 0.0
-            pending_in["jeokchae"] += parse_num(row.iloc[5]) if len(row) > 5 else 0.0
+            pending_in["yangsangchu"] += parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
+            pending_in["yangbaechu"] += parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
+            pending_in["jeokchae"] += parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
             continue
 
-        # 2) 일반 날짜 행 (g 단위)
+        # 2) 날짜 행
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_stock = parse_num(row.iloc[1]) if len(row) > 1 else 0.0
-        y_use = parse_num(row.iloc[2]) if len(row) > 2 else 0.0
+        y_stock = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
+        y_use = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0
 
-        b_stock = parse_num(row.iloc[3]) if len(row) > 3 else 0.0
-        b_use = parse_num(row.iloc[4]) if len(row) > 4 else 0.0
+        b_stock = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
+        b_use = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0
 
-        j_stock = parse_num(row.iloc[5]) if len(row) > 5 else 0.0
-        j_use = parse_num(row.iloc[6]) if len(row) > 6 else 0.0
+        j_stock = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
+        j_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0
 
         y_in = pending_in["yangsangchu"]
         b_in = pending_in["yangbaechu"]
@@ -207,18 +210,31 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
 
+        if is_first_row:
+            y_beg = y_stock
+            b_beg = b_stock
+            j_beg = j_stock
+            is_first_row = False
+        else:
+            y_beg = 0.0
+            b_beg = 0.0
+            j_beg = 0.0
+
         note = "휴무" if (y_in == 0 and y_use == 0 and b_in == 0 and b_use == 0 and j_in == 0 and j_use == 0 and y_stock == 0 and b_stock == 0 and j_stock == 0) else ""
 
         data_rows.append(
             {
                 "date": formatted_date,
                 "yymmdd": yymmdd,
+                "yangsangchu_beg": y_beg,
                 "yangsangchu_in": y_in,
                 "yangsangchu_use": y_use,
                 "yangsangchu_stock": y_stock,
+                "yangbaechu_beg": b_beg,
                 "yangbaechu_in": b_in,
                 "yangbaechu_use": b_use,
                 "yangbaechu_stock": b_stock,
+                "jeokchae_beg": j_beg,
                 "jeokchae_in": j_in,
                 "jeokchae_use": j_use,
                 "jeokchae_stock": j_stock,
@@ -294,17 +310,15 @@ def parse_and_convert_to_standard_ledger(excel_file):
         )
 
         items_map = [
-            (2, item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0), item.get("yangsangchu_stock", 0)),
-            (6, item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0), item.get("yangbaechu_stock", 0)),
-            (10, item.get("jeokchae_in", 0), item.get("jeokchae_use", 0), item.get("jeokchae_stock", 0)),
+            (2, item.get("yangsangchu_beg", 0), item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0)),
+            (6, item.get("yangbaechu_beg", 0), item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0)),
+            (10, item.get("jeokchae_beg", 0), item.get("jeokchae_in", 0), item.get("jeokchae_use", 0)),
         ]
 
-        for start_col, in_val, use_val, stock_val in items_map:
+        for start_col, beg_val, in_val, use_val in items_map:
             end_col_let = get_column_letter(start_col + 3)
 
-            # 첫 행 기초재고 역산 (g 단위 원본 유지)
             if r_idx == start_row:
-                beg_val = max(0.0, stock_val + use_val - in_val)
                 ws.cell(row=r_idx, column=start_col, value=beg_val)
             else:
                 ws.cell(row=r_idx, column=start_col, value=f"={end_col_let}{r_idx-1}")
@@ -348,7 +362,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
 
 # ---------------------------------------------------------
-# 표준 수불부 기반 g(그램) 수량 입고 큐 생성
+# [핵심 2] 정제된 탭 2 수불부 기반으로 탭 1 대조용 입고 큐 생성
 # ---------------------------------------------------------
 def create_lots_from_standard_ledger(standard_rows):
     item_lots = {"양상추": [], "양배추": [], "적채": []}
@@ -356,22 +370,18 @@ def create_lots_from_standard_ledger(standard_rows):
     if not standard_rows:
         return item_lots
 
-    # 1) 첫 행 기초 이월 재고 (g 단위)
+    # 1) 기초 이월 재고
     first_row = standard_rows[0]
     first_yymmdd = first_row["yymmdd"]
 
-    y_beg = max(0.0, first_row["yangsangchu_stock"] + first_row["yangsangchu_use"] - first_row["yangsangchu_in"])
-    b_beg = max(0.0, first_row["yangbaechu_stock"] + first_row["yangbaechu_use"] - first_row["yangbaechu_in"])
-    j_beg = max(0.0, first_row["jeokchae_stock"] + first_row["jeokchae_use"] - first_row["jeokchae_in"])
+    if first_row["yangsangchu_beg"] > 0:
+        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangsangchu_beg"], "vendor": "K01"})
+    if first_row["yangbaechu_beg"] > 0:
+        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangbaechu_beg"], "vendor": "K01"})
+    if first_row["jeokchae_beg"] > 0:
+        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": first_row["jeokchae_beg"], "vendor": "K01"})
 
-    if y_beg > 0:
-        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_g": y_beg, "vendor": "K01"})
-    if b_beg > 0:
-        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_g": b_beg, "vendor": "K01"})
-    if j_beg > 0:
-        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": j_beg, "vendor": "K01"})
-
-    # 2) 실제 입고 수량 (g 단위)
+    # 2) 순수 입고 수량이 존재하는 행만 입고 로트로 등록
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
@@ -446,6 +456,9 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
     return f"{p_code}{p_yymmdd}-{v_code}"
 
 
+# ---------------------------------------------------------
+# [핵심 3] 정제된 탭 2 수불 데이터 기반으로 대조표 생성
+# ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
@@ -529,8 +542,8 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                         "prod_yymmdd": prod_yymmdd,
                         "품목": str(item).strip(),
                         "작업일지_롯트": lot_str if has_lot else "없음",
-                        "act_g": a_val,  # g 단위 원본 수량
-                        "실투입 양 (kg)": round(a_val / 1000.0, 1),  # 대조표 표시용 kg
+                        "act_g": a_val,
+                        "실투입 양 (kg)": round(a_val / 1000.0, 1),
                         "준비 양 (kg)": round(p_val / 1000.0, 1),
                         "has_lot": has_lot,
                     }
@@ -589,7 +602,6 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                     remaining -= used
 
                     code_str = f"{p}{lot_item['yymmdd']}-{lot_item.get('vendor', 'K01')}"
-                    # 대조표 표시 시 g 수량을 kg으로 변환하여 출력
                     used_parts.append(f"{code_str}({round(used / 1000.0, 1)}kg)")
 
                 if remaining > 0:
@@ -638,12 +650,13 @@ tab1, tab2 = st.tabs(["🔍 원료코드 대조표 (자동 연동)", "📊 표�
 
 if excel_file is not None:
     try:
+        # [연동 핵심] 탭 2의 정제 수불 데이터를 1회 생성하여 탭 1과 탭 2에 공동 적용
         excel_bytes, standard_rows, stock_sheet_name = parse_and_convert_to_standard_ledger(excel_file)
 
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
-                st.success("✅ 정확하게 교정된 g 단위 수불 구조 기반으로 원료코드 대조가 완료되었습니다!")
+                st.success("✅ 탭 2 정제 수불부 연동으로 원료코드 대조가 완료되었습니다!")
 
                 st.dataframe(df_result, use_container_width=True)
 
