@@ -83,12 +83,37 @@ item_col_map = {
 }
 
 
-def extract_yymmdd_and_mmdd(val_str):
-    """문자열/날짜 셀에서 연, 월, 일 추출 (YYYY-MM-DD, MM/DD 등 모두 대응)"""
-    val_str = str(val_str).strip()
+def extract_yymmdd_and_mmdd(val):
+    """
+    셀 데이터(datetime 객체 또는 문자열)에서 정확한 연/월/일 추출
+    """
+    if pd.isna(val):
+        today_yymmdd = datetime.now().strftime("%y%m%d")
+        return today_yymmdd[:2], today_yymmdd, today_yymmdd[2:]
+
+    # 1. datetime / Timestamp 객체인 경우
+    if isinstance(val, (pd.Timestamp, datetime)):
+        yy = val.strftime("%y")
+        yymmdd = val.strftime("%y%m%d")
+        mmdd = val.strftime("%m%d")
+        return yy, yymmdd, mmdd
+
+    val_str = str(val).strip()
+
+    # 2. pandas.to_datetime으로 일차 변환 시도
+    try:
+        dt = pd.to_datetime(val_str, errors="coerce")
+        if pd.notna(dt):
+            yy = dt.strftime("%y")
+            yymmdd = dt.strftime("%y%m%d")
+            mmdd = dt.strftime("%m%d")
+            return yy, yymmdd, mmdd
+    except Exception:
+        pass
+
     current_yy = datetime.now().strftime("%y")
 
-    # 1. YYYY-MM-DD 또는 YYYY.MM.DD 또는 YYYY/MM/DD
+    # 3. YYYY-MM-DD 또는 YYYY.MM.DD 또는 YYYY/MM/DD 정규식
     m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
         yy = m_full.group(1)[2:]
@@ -96,7 +121,7 @@ def extract_yymmdd_and_mmdd(val_str):
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 2. MM/DD 또는 MM.DD
+    # 4. MM/DD 또는 MM.DD
     m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
     if m_short:
         p1 = m_short.group(1).zfill(2)
@@ -111,7 +136,7 @@ def extract_yymmdd_and_mmdd(val_str):
             dd = p2
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 3. YYMMDD 6자리
+    # 5. YYMMDD 6자리
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
@@ -142,11 +167,9 @@ def find_stock_sheet_name(xls):
 
 def parse_stock_sheet_fifo(xls):
     """
-    수정된 매입자료 시트 파싱:
-    - A열: 날짜
-    - B열: 양상추 매입 / E열: 양배추 매입 / H열: 적채 매입
-    - B, E, H열에 수량이 적혀있는 행의 날짜를 매입일자 로트로 등록
-    - 첫 번째 데이터 행(기초재고) 수량은 기초 로트로 등록
+    매입자료 시트 파싱:
+    - A열 날짜를 datetime/문자열에서 정확히 추출
+    - B열: 양상추, E열: 양배추, H열: 적채 매입 수량 반영
     """
     item_lots = {item: [] for item in item_col_map}
     try:
@@ -159,11 +182,12 @@ def parse_stock_sheet_fifo(xls):
             if len(row) == 0 or pd.isna(row.iloc[0]):
                 continue
 
-            a_val = str(row.iloc[0]).strip()
+            raw_date = row.iloc[0]
+            a_val = str(raw_date).strip()
             if not a_val or a_val.lower() == "nan" or "날짜" in a_val:
                 continue
 
-            yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(a_val)
+            yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(raw_date)
 
             # 첫 번째 유효 날짜 데이터 행(기초 재고 행) 판별
             is_first_data_row = False
@@ -175,7 +199,7 @@ def parse_stock_sheet_fifo(xls):
                 p_col = cols["purchase_col"]
                 s_col = cols["stock_col"]
 
-                # 1) B, E, H열 (신규 매입/입고 수량)
+                # B, E, H열 매입 수량
                 p_val = (
                     row.iloc[p_col]
                     if p_col < len(row) and pd.notna(row.iloc[p_col])
@@ -196,7 +220,7 @@ def parse_stock_sheet_fifo(xls):
                         }
                     )
 
-                # 2) 첫 번째 기초 재고 행인 경우 C, F, I열의 초기 재고 등록
+                # 첫 번째 기초 재고 행인 경우 초기 재고 등록
                 elif is_first_data_row:
                     s_val = (
                         row.iloc[s_col]
@@ -287,11 +311,6 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 
 
 def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
-    """
-    매입자료 기준 코드 생성:
-    - 양상추, 양배추, 적채: 매입자료 시트(B, E, H열 매입일) FIFO 차감
-    - 프릴/프릴아이스: 매입자료 시트에 없으므로 빈칸("") 반환
-    """
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
 
     # 프릴/프릴아이스는 매입자료 시트에 없으므로 빈칸 처리
@@ -452,7 +471,7 @@ def generate_salad_report(excel_file, csv_file):
         # 2. 수불부 기준 코드 (최근 매입)
         code_subul = get_latest_purchase_code(item, prod_date, df_csv)
 
-        # 3. 매입자료 기준 코드 (양상추/양배추/적채만 적용, 프릴은 빈칸)
+        # 3. 매입자료 기준 코드
         code_purchase = consume_fifo_and_format(
             item, act_kg, prod_date, item_lots, df_csv
         )
