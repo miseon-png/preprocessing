@@ -10,7 +10,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import streamlit as st
 
-st.set_page_config(page_title="샐러드 생산일보 및 수불부 System", layout="wide")
+st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", layout="wide")
 
 # 1. 인쇄 및 공통 스타일 설정
 st.markdown(
@@ -155,7 +155,7 @@ def find_stock_sheet_name(xls):
 
 
 # ---------------------------------------------------------
-# 매입자료 시트를 파싱하고 FIFO 투입 소진 추적 열까지 생성하는 정제 함수
+# 표준 수불부 정제 및 FIFO 투입 소진 추적 함수
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -240,36 +240,38 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # --- FIFO 기반 투입 소진 출처 상세 추적 ---
+    # --- FIFO 기반 투입 소진 출처 상세 추적 및 코드 조합 생성 ---
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     if raw_data_rows:
         f_row = raw_data_rows[0]
         if f_row["yangsangchu_beg"] > 0:
-            item_queues["yangsangchu"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangsangchu_beg"]})
+            item_queues["yangsangchu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangsangchu_beg"]})
         if f_row["yangbaechu_beg"] > 0:
-            item_queues["yangbaechu"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangbaechu_beg"]})
+            item_queues["yangbaechu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangbaechu_beg"]})
         if f_row["jeokchae_beg"] > 0:
-            item_queues["jeokchae"].append({"label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["jeokchae_beg"]})
+            item_queues["jeokchae"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["jeokchae_beg"]})
 
     data_rows = []
+    generated_code_rows = []
+
     for row in raw_data_rows:
         row_copy = copy.deepcopy(row)
         mmdd_str = f"{row['yymmdd'][2:4]}/{row['yymmdd'][4:]}"
 
-        # 신규 입고 수량을 큐에 추가
         if row["yangsangchu_in"] > 0:
-            item_queues["yangsangchu"].append({"label": f"{mmdd_str} 매입", "avail": row["yangsangchu_in"]})
+            item_queues["yangsangchu"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["yangsangchu_in"]})
         if row["yangbaechu_in"] > 0:
-            item_queues["yangbaechu"].append({"label": f"{mmdd_str} 매입", "avail": row["yangbaechu_in"]})
+            item_queues["yangbaechu"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["yangbaechu_in"]})
         if row["jeokchae_in"] > 0:
-            item_queues["jeokchae"].append({"label": f"{mmdd_str} 매입", "avail": row["jeokchae_in"]})
+            item_queues["jeokchae"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["jeokchae_in"]})
 
-        # 품목별 소진 내역 추적 함수
-        def trace_usage(item_key, use_amount):
+        def trace_usage(item_key, item_prefix, use_amount):
             if use_amount <= 0:
-                return "-"
+                return "-", "-"
             rem = use_amount
-            used_list = []
+            used_sources = []
+            used_codes = []
+
             for lot in item_queues[item_key]:
                 if rem <= 0:
                     break
@@ -278,19 +280,45 @@ def parse_and_convert_to_standard_ledger(excel_file):
                 u = min(lot["avail"], rem)
                 lot["avail"] -= u
                 rem -= u
-                used_list.append(f"{lot['label']}({round(u/1000.0, 1)}kg)")
+
+                used_sources.append(f"{lot['label']}({round(u/1000.0, 1)}kg)")
+                used_codes.append(f"{item_prefix}{lot['yymmdd']}-K1")
 
             if rem > 0:
-                used_list.append(f"부족({round(rem/1000.0, 1)}kg)")
-            return " / ".join(used_list)
+                used_sources.append(f"부족({round(rem/1000.0, 1)}kg)")
+                used_codes.append(f"{item_prefix}{row['yymmdd']}-K1[부족]")
 
-        row_copy["yangsangchu_source"] = trace_usage("yangsangchu", row["yangsangchu_use"])
-        row_copy["yangbaechu_source"] = trace_usage("yangbaechu", row["yangbaechu_use"])
-        row_copy["jeokchae_source"] = trace_usage("jeokchae", row["jeokchae_use"])
+            return " / ".join(used_sources), " / ".join(list(dict.fromkeys(used_codes)))
+
+        y_src, y_code = trace_usage("yangsangchu", "X", row["yangsangchu_use"])
+        b_src, b_code = trace_usage("yangbaechu", "D", row["yangbaechu_use"])
+        j_src, j_code = trace_usage("jeokchae", "A", row["jeokchae_use"])
+
+        row_copy["yangsangchu_source"] = y_src
+        row_copy["yangbaechu_source"] = b_src
+        row_copy["jeokchae_source"] = j_src
 
         data_rows.append(row_copy)
 
-    # --- openpyxl 엑셀 생성 (투입 소진 내역 열 포함 17개 컬럼) ---
+        # 원료코드 생성탭 전용 행 수집
+        if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
+            generated_code_rows.append(
+                {
+                    "생산일자": row["date"],
+                    "양상추 투입(kg)": round(row["yangsangchu_use"] / 1000.0, 1),
+                    "양상추 소진매입일": y_src,
+                    "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
+                    "양배추 투입(kg)": round(row["yangbaechu_use"] / 1000.0, 1),
+                    "양배추 소진매입일": b_src,
+                    "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
+                    "적채 투입(kg)": round(row["jeokchae_use"] / 1000.0, 1),
+                    "적채 소진매입일": j_src,
+                    "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
+                    "비고": row["note"],
+                }
+            )
+
+    # --- openpyxl 엑셀 생성 ---
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "원재료 수불부"
@@ -402,12 +430,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     buffer = io.BytesIO()
     wb.save(buffer)
-    return buffer.getvalue(), data_rows, stock_sheet
+    return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet
 
 
-# ---------------------------------------------------------
-# 정제 수불부 기반으로 대조표 로트 큐 생성
-# ---------------------------------------------------------
 def create_lots_from_standard_ledger(standard_rows):
     item_lots = {"양상추": [], "양배추": [], "적채": []}
 
@@ -418,20 +443,20 @@ def create_lots_from_standard_ledger(standard_rows):
     first_yymmdd = first_row["yymmdd"]
 
     if first_row["yangsangchu_beg"] > 0:
-        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangsangchu_beg"], "vendor": "K01"})
+        item_lots["양상추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangsangchu_beg"], "vendor": "K1"})
     if first_row["yangbaechu_beg"] > 0:
-        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangbaechu_beg"], "vendor": "K01"})
+        item_lots["양배추"].append({"yymmdd": first_yymmdd, "avail_g": first_row["yangbaechu_beg"], "vendor": "K1"})
     if first_row["jeokchae_beg"] > 0:
-        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": first_row["jeokchae_beg"], "vendor": "K01"})
+        item_lots["적채"].append({"yymmdd": first_yymmdd, "avail_g": first_row["jeokchae_beg"], "vendor": "K1"})
 
     for row in standard_rows:
         yymmdd = row["yymmdd"]
         if row["yangsangchu_in"] > 0:
-            item_lots["양상추"].append({"yymmdd": yymmdd, "avail_g": row["yangsangchu_in"], "vendor": "K01"})
+            item_lots["양상추"].append({"yymmdd": yymmdd, "avail_g": row["yangsangchu_in"], "vendor": "K1"})
         if row["yangbaechu_in"] > 0:
-            item_lots["양배추"].append({"yymmdd": yymmdd, "avail_g": row["yangbaechu_in"], "vendor": "K01"})
+            item_lots["양배추"].append({"yymmdd": yymmdd, "avail_g": row["yangbaechu_in"], "vendor": "K1"})
         if row["jeokchae_in"] > 0:
-            item_lots["적채"].append({"yymmdd": yymmdd, "avail_g": row["jeokchae_in"], "vendor": "K01"})
+            item_lots["적채"].append({"yymmdd": yymmdd, "avail_g": row["jeokchae_in"], "vendor": "K1"})
 
     return item_lots
 
@@ -462,7 +487,7 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
     _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
-    v_code = "F01" if p_code == "F" else "K01"
+    v_code = "F01" if p_code == "F" else "K1"
 
     if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
         try:
@@ -611,7 +636,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
         if has_lot:
             _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
             code_worklog = (
-                f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
+                f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
             )
         else:
             code_worklog = "없음"
@@ -625,7 +650,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             valid_lots = [l for l in all_lots if l["yymmdd"] <= prod_yymmdd]
 
             if not valid_lots or act_g <= 0:
-                code_purchase = f"{p}{prod_yymmdd}-K01({round(act_g / 1000.0, 1)}kg)"
+                code_purchase = f"{p}{prod_yymmdd}-K1({round(act_g / 1000.0, 1)}kg)"
             else:
                 remaining = act_g
                 used_parts = []
@@ -640,12 +665,12 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                     lot_item["avail_g"] -= used
                     remaining -= used
 
-                    code_str = f"{p}{lot_item['yymmdd']}-{lot_item.get('vendor', 'K01')}"
+                    code_str = f"{p}{lot_item['yymmdd']}-{lot_item.get('vendor', 'K1')}"
                     used_parts.append(f"{code_str}({round(used / 1000.0, 1)}kg)")
 
                 if remaining > 0:
                     latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else prod_yymmdd
-                    v_code = valid_lots[-1].get("vendor", "K01") if valid_lots else "K01"
+                    v_code = valid_lots[-1].get("vendor", "K1") if valid_lots else "K1"
                     code_str = f"{p}{latest_yymmdd}-{v_code}"
                     used_parts.append(f"{code_str}({round(remaining / 1000.0, 1)}kg)[부족]")
 
@@ -683,14 +708,17 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
 
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성
+# Streamlit 화면 구성 (3개 탭)
 # ---------------------------------------------------------
-tab1, tab2 = st.tabs(["🔍 원료코드 대조표 (자동 연동)", "📊 표준 원재료 수불부 정리"])
+tab1, tab2, tab3 = st.tabs(
+    ["🔍 원료코드 대조표 (자동 연동)", "📊 표준 원재료 수불부 정리", "🏷️ 원료코드 생성 및 일자별 정리"]
+)
 
 if excel_file is not None:
     try:
-        excel_bytes, standard_rows, stock_sheet_name = parse_and_convert_to_standard_ledger(excel_file)
+        excel_bytes, standard_rows, code_summary_rows, stock_sheet_name = parse_and_convert_to_standard_ledger(excel_file)
 
+        # --- Tab 1: 원료코드 대조표 ---
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
@@ -706,9 +734,7 @@ if excel_file is not None:
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    df_result.to_excel(
-                        writer, index=False, sheet_name="원료코드_대조표"
-                    )
+                    df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
 
                 st.download_button(
                     label="📥 원료코드 대조표 다운로드 (.xlsx)",
@@ -719,6 +745,7 @@ if excel_file is not None:
                 )
                 st.caption("💡 Tip: 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
 
+        # --- Tab 2: 표준 원재료 수불부 ---
         with tab2:
             st.subheader("📋 표준 원재료 수불부 자동 생성 (투입 소진 매입일자 추적)")
             st.write(
@@ -767,6 +794,31 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
+        # --- Tab 3: 신규 추가! 원료코드 생성 및 일자별 정리 ---
+        with tab3:
+            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
+            st.write(
+                "**규칙**: 양상추(`X`), 양배추(`D`), 적채(`A`), 프릴(`F`) + `YYMMDD`(소진 매입일자) + `-K1` 거래처 코드 자동 부여"
+            )
+
+            df_code_summary = pd.DataFrame(code_summary_rows)
+            if not df_code_summary.empty:
+                st.dataframe(df_code_summary, use_container_width=True)
+
+                code_buffer = io.BytesIO()
+                with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
+                    df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
+
+                st.download_button(
+                    label="📥 일자별 생성 원료코드 정리표 다운로드 (.xlsx)",
+                    data=code_buffer.getvalue(),
+                    file_name="일자별_생성_원료코드_목록.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            else:
+                st.info("투입 수량 데이터가 존재하지 않습니다.")
+
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
         st.code(traceback.format_exc())
@@ -775,3 +827,5 @@ else:
         st.info("👆 상단에서 1. 샐러드 생산일지 엑셀 파일과 2. 원료 매입 수불부를 업로드해 주세요.")
     with tab2:
         st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 자동으로 정제된 수불부가 생성됩니다.")
+    with tab3:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 일자별로 자동 생성된 원료코드 표가 출력됩니다.")
