@@ -84,11 +84,11 @@ item_col_map = {
 
 
 def extract_yymmdd_and_mmdd(val_str):
-    """문자열/날짜 셀에서 연, 월, 일 추출"""
+    """문자열/날짜 셀에서 연, 월, 일 추출 (10/05 입고, 2026-10-05 등 모두 대응)"""
     val_str = str(val_str).strip()
     current_yy = datetime.now().strftime("%y")
 
-    # 1. YYYY-MM-DD 또는 YYYY.MM.DD
+    # 1. YYYY-MM-DD 또는 YYYY.MM.DD 또는 YYYY/MM/DD
     m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
         yy = m_full.group(1)[2:]
@@ -96,12 +96,12 @@ def extract_yymmdd_and_mmdd(val_str):
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 2. MM/DD 또는 MM.DD (입고 문구 등)
+    # 2. MM/DD 또는 MM.DD (예: "10/05 입고", "10.08 입고")
     m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
     if m_short:
         p1 = m_short.group(1).zfill(2)
         p2 = m_short.group(2).zfill(2)
-        if len(p1) == 2 and int(p1) > 12:
+        if int(p1) > 12:
             yy = p1
             mm = p2
             dd = "01"
@@ -150,7 +150,7 @@ def parse_stock_sheet_fifo(xls):
     """
     재고 시트 파싱:
     - 날짜 행의 숫자는 투입 후 남은 기말재고이므로 제외.
-    - 첫 번째 기초 재고 행 및 '입고' 문구가 포함된 행만 실제 입고 로트로 등록.
+    - 첫 번째 기초 재고 행 및 '입고' 문구가 포함된 행만 실제 입고 로트로 정확히 등록.
     """
     item_lots = {item: [] for item in item_col_map}
     try:
@@ -171,10 +171,8 @@ def parse_stock_sheet_fifo(xls):
             yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(a_val)
             is_incoming = "입고" in a_val
 
-            # 첫번째 유효 데이터 행(기초 이월 재고) 여부 판별
             is_first_data_row = False
             if not is_incoming and not found_first_data_row:
-                # 숫자 또는 날짜 패턴이 확인되면 첫 기초재고 행으로 판단
                 if re.search(r"\d", a_val):
                     is_first_data_row = True
                     found_first_data_row = True
@@ -193,7 +191,7 @@ def parse_stock_sheet_fifo(xls):
                 except Exception:
                     s_num = 0.0
 
-                # 입고 행이거나 첫 기초 재고 행일 때만 입고 로트로 등록
+                # 입고 행이거나 기초 재고 행일 때만 해당 입고일자(yymmdd) 로트로 등록 (g -> kg 단위 변환)
                 if (is_incoming or is_first_data_row) and s_num > 0:
                     item_lots[item].append(
                         {
@@ -233,10 +231,10 @@ def parse_csv_purchase(uploaded_file):
 
 
 def get_latest_purchase_code(item_name, prod_date, df_csv):
-    """수불부(CSV/Excel)에서 생산일자 이전/당일 기준 해당 품목의 가장 최근 매입/입고 로트 코드 조회"""
+    """수불부에서 생산일자 이전/당일 가장 최근 매입 날짜 코드 추출"""
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
-    yy_prefix, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
+    _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
     v_code = "F01" if p_code == "F" else "K01"
 
     if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
@@ -253,7 +251,8 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
                 for _, r in df_filtered.iterrows():
                     row_str = " ".join(r.dropna().astype(str).tolist())
                     _, r_yymmdd, r_mmdd = extract_yymmdd_and_mmdd(row_str)
-                    if r_mmdd <= p_mmdd:
+
+                    if r_yymmdd <= p_yymmdd:
                         candidate_rows.append((r_yymmdd, r_mmdd, row_str))
 
                 if candidate_rows:
@@ -287,11 +286,10 @@ def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
     if not all_lots or req_kg <= 0:
         return f"{p_code}{p_yymmdd}-K01({round(req_kg, 1)}kg)"
 
-    # 생산일자(p_mmdd) 이하(이전/당일) 입고된 재고만 필터링
+    # 생산일자(p_yymmdd) 이하(이전/당일) 입고된 재고만 필터링
     valid_lots = []
     for lot in all_lots:
-        lot_mmdd = lot["yymmdd"][2:]
-        if lot_mmdd <= p_mmdd:
+        if lot["yymmdd"] <= p_yymmdd:
             valid_lots.append(lot)
 
     remaining = req_kg
