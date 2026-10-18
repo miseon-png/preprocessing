@@ -75,7 +75,6 @@ prefix_map = {
     "프릴아이스": "F",
 }
 
-# 품목별 매입(입고) 수량 컬럼 및 재고 컬럼 지정 (A=0: 날짜, B=1: 양상추 매입, C=2: 양상추 재고...)
 item_col_map = {
     "양상추": {"purchase_col": 1, "stock_col": 2},
     "양배추": {"purchase_col": 4, "stock_col": 5},
@@ -85,13 +84,14 @@ item_col_map = {
 
 def extract_yymmdd_and_mmdd(val):
     """
-    셀 데이터(datetime 객체 또는 문자열)에서 정확한 연/월/일 추출
+    셀 데이터에서 YYMMDD (연도2자리+월2자리+일2자리) 순서로 정확히 추출
+    (예: 2026-10-01 -> 261001)
     """
     if pd.isna(val):
-        today_yymmdd = datetime.now().strftime("%y%m%d")
-        return today_yymmdd[:2], today_yymmdd, today_yymmdd[2:]
+        today = datetime.now()
+        return today.strftime("%y"), today.strftime("%y%m%d"), today.strftime("%m%d")
 
-    # 1. datetime / Timestamp 객체인 경우
+    # 1. datetime / Timestamp 객체인 경우 (YYMMDD 강제 지정)
     if isinstance(val, (pd.Timestamp, datetime)):
         yy = val.strftime("%y")
         yymmdd = val.strftime("%y%m%d")
@@ -100,9 +100,17 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
 
-    # 2. pandas.to_datetime으로 일차 변환 시도
+    # 2. YYYY-MM-DD 또는 YYYY.MM.DD 또는 YYYY/MM/DD 정규식 우선 매칭
+    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
+    if m_full:
+        yy = m_full.group(1)[2:]
+        mm = m_full.group(2).zfill(2)
+        dd = m_full.group(3).zfill(2)
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
+
+    # 3. pandas.to_datetime 시도 (yearfirst=True 지정하여 DDMMYY 혼동 방지)
     try:
-        dt = pd.to_datetime(val_str, errors="coerce")
+        dt = pd.to_datetime(val_str, errors="coerce", yearfirst=True)
         if pd.notna(dt):
             yy = dt.strftime("%y")
             yymmdd = dt.strftime("%y%m%d")
@@ -112,14 +120,6 @@ def extract_yymmdd_and_mmdd(val):
         pass
 
     current_yy = datetime.now().strftime("%y")
-
-    # 3. YYYY-MM-DD 또는 YYYY.MM.DD 또는 YYYY/MM/DD 정규식
-    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
-    if m_full:
-        yy = m_full.group(1)[2:]
-        mm = m_full.group(2).zfill(2)
-        dd = m_full.group(3).zfill(2)
-        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
     # 4. MM/DD 또는 MM.DD
     m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
@@ -142,8 +142,8 @@ def extract_yymmdd_and_mmdd(val):
         d = m_digits.group(1)
         return d[:2], d, d[2:]
 
-    today_yymmdd = datetime.now().strftime("%y%m%d")
-    return current_yy, today_yymmdd, today_yymmdd[2:]
+    today = datetime.now()
+    return current_yy, today.strftime("%y%m%d"), today.strftime("%m%d")
 
 
 def find_stock_sheet_name(xls):
@@ -166,11 +166,6 @@ def find_stock_sheet_name(xls):
 
 
 def parse_stock_sheet_fifo(xls):
-    """
-    매입자료 시트 파싱:
-    - A열 날짜를 datetime/문자열에서 정확히 추출
-    - B열: 양상추, E열: 양배추, H열: 적채 매입 수량 반영
-    """
     item_lots = {item: [] for item in item_col_map}
     try:
         stock_sheet = find_stock_sheet_name(xls)
@@ -189,7 +184,6 @@ def parse_stock_sheet_fifo(xls):
 
             yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(raw_date)
 
-            # 첫 번째 유효 날짜 데이터 행(기초 재고 행) 판별
             is_first_data_row = False
             if not found_first_data_row and re.search(r"\d", a_val):
                 is_first_data_row = True
@@ -199,7 +193,6 @@ def parse_stock_sheet_fifo(xls):
                 p_col = cols["purchase_col"]
                 s_col = cols["stock_col"]
 
-                # B, E, H열 매입 수량
                 p_val = (
                     row.iloc[p_col]
                     if p_col < len(row) and pd.notna(row.iloc[p_col])
@@ -220,7 +213,6 @@ def parse_stock_sheet_fifo(xls):
                         }
                     )
 
-                # 첫 번째 기초 재고 행인 경우 초기 재고 등록
                 elif is_first_data_row:
                     s_val = (
                         row.iloc[s_col]
@@ -313,7 +305,6 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
 
-    # 프릴/프릴아이스는 매입자료 시트에 없으므로 빈칸 처리
     if lookup_item not in item_col_map:
         return ""
 
@@ -325,7 +316,6 @@ def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
     if not all_lots or req_kg <= 0:
         return f"{p_code}{p_yymmdd}-K01({round(req_kg, 1)}kg)"
 
-    # 생산일자 이하(이전/당일) 입고된 재고만 필터링
     valid_lots = [lot for lot in all_lots if lot["yymmdd"] <= p_yymmdd]
 
     remaining = req_kg
