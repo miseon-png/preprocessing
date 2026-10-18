@@ -75,7 +75,6 @@ prefix_map = {
     "프릴아이스": "F",
 }
 
-# 재고 시트 컬럼 인덱스 매핑 (A=날짜/입고, B=양상추재고, C=양상추투입, D=양배추재고...)
 item_col_map = {
     "양상추": {"stock": 1, "input": 2},
     "양배추": {"stock": 3, "input": 4},
@@ -122,12 +121,6 @@ def extract_yymmdd_and_mmdd(val_str):
 
 
 def find_stock_sheet_name(xls):
-    """
-    재고 시트 자동 탐색 로직:
-    1. 'sheet1' (대소문자 구분 없음) 시트가 존재하면 해당 시트 사용
-    2. 없으면 시트들을 순회하며 '양상추', '양배추', '적채' 키워드가 들어있는 헤더를 가진 시트 탐색
-    3. 모두 없을 경우 첫 번째 시트 반환
-    """
     for sheet_name in xls.sheet_names:
         if sheet_name.strip().lower() == "sheet1":
             return sheet_name
@@ -148,9 +141,8 @@ def find_stock_sheet_name(xls):
 
 def parse_stock_sheet_fifo(xls):
     """
-    재고 시트 파싱:
-    - 날짜 행의 숫자는 투입 후 남은 기말재고이므로 제외.
-    - 첫 번째 기초 재고 행 및 '입고' 문구가 포함된 행만 실제 입고 로트로 정확히 등록.
+    재고 시트 파싱 보강:
+    입고 행일 경우 컬럼 위치에 상관없이 해당 행에서 유효한 입고 수량을 유연하게 추출
     """
     item_lots = {item: [] for item in item_col_map}
     try:
@@ -160,16 +152,18 @@ def parse_stock_sheet_fifo(xls):
         found_first_data_row = False
 
         for idx, row in df_stock.iterrows():
+            row_str = " ".join(row.dropna().astype(str).tolist())
             a_val = (
                 str(row.iloc[0]).strip()
                 if len(row) > 0 and pd.notna(row.iloc[0])
                 else ""
             )
-            if not a_val or a_val.lower() == "nan" or "매입" in a_val:
+
+            if not row_str or "매입" in row_str:
                 continue
 
-            yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(a_val)
-            is_incoming = "입고" in a_val
+            is_incoming = "입고" in row_str or "입고" in a_val
+            yy, yymmdd, mmdd = extract_yymmdd_and_mmdd(row_str if is_incoming else a_val)
 
             is_first_data_row = False
             if not is_incoming and not found_first_data_row:
@@ -179,19 +173,44 @@ def parse_stock_sheet_fifo(xls):
 
             for item, cols in item_col_map.items():
                 s_col = cols["stock"]
-                s_val = (
-                    row.iloc[s_col]
-                    if s_col < len(row) and pd.notna(row.iloc[s_col])
-                    else None
-                )
+                s_val = None
 
-                try:
-                    cleaned_val = re.sub(r"[^\d.]", "", str(s_val))
-                    s_num = float(cleaned_val) if cleaned_val else 0.0
-                except Exception:
-                    s_num = 0.0
+                if is_incoming:
+                    # 입고 행인 경우, 지정 컬럼 외 주변 셀에서 수량이 있는 숫자를 탐색
+                    candidate_nums = []
+                    for val in row.dropna():
+                        cleaned = re.sub(r"[^\d.]", "", str(val))
+                        try:
+                            num = float(cleaned)
+                            if num > 1000:  # 입고량(보통 100,000 ~ 600,000g)
+                                candidate_nums.append(num)
+                        except ValueError:
+                            continue
+                    
+                    if candidate_nums:
+                        # 양상추=가장 큰 값 또는 인덱스별 매칭
+                        if item == "양상추":
+                            s_num = candidate_nums[0]
+                        elif item == "양배추" and len(candidate_nums) > 1:
+                            s_num = candidate_nums[1]
+                        elif item == "적채" and len(candidate_nums) > 2:
+                            s_num = candidate_nums[2]
+                        else:
+                            s_num = candidate_nums[0]
+                    else:
+                        s_num = 0.0
+                else:
+                    s_val = (
+                        row.iloc[s_col]
+                        if s_col < len(row) and pd.notna(row.iloc[s_col])
+                        else None
+                    )
+                    try:
+                        cleaned_val = re.sub(r"[^\d.]", "", str(s_val))
+                        s_num = float(cleaned_val) if cleaned_val else 0.0
+                    except Exception:
+                        s_num = 0.0
 
-                # 입고 행이거나 기초 재고 행일 때만 해당 입고일자(yymmdd) 로트로 등록 (g -> kg 단위 변환)
                 if (is_incoming or is_first_data_row) and s_num > 0:
                     item_lots[item].append(
                         {
@@ -208,7 +227,6 @@ def parse_stock_sheet_fifo(xls):
 
 
 def parse_csv_purchase(uploaded_file):
-    """원료 매입 입고자료 / 수불부 파일 파싱"""
     if uploaded_file is None:
         return pd.DataFrame()
 
@@ -231,7 +249,6 @@ def parse_csv_purchase(uploaded_file):
 
 
 def get_latest_purchase_code(item_name, prod_date, df_csv):
-    """수불부에서 생산일자 이전/당일 가장 최근 매입 날짜 코드 추출"""
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
     _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
@@ -272,7 +289,6 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 
 
 def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
-    """재고 시트 FIFO 소진 (생산일자 이전/당일 입고분만 사용)"""
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(item_name, "X"))
     _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
@@ -286,7 +302,6 @@ def consume_fifo_and_format(item_name, req_kg, prod_date, item_lots, df_csv):
     if not all_lots or req_kg <= 0:
         return f"{p_code}{p_yymmdd}-K01({round(req_kg, 1)}kg)"
 
-    # 생산일자(p_yymmdd) 이하(이전/당일) 입고된 재고만 필터링
     valid_lots = []
     for lot in all_lots:
         if lot["yymmdd"] <= p_yymmdd:
