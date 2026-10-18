@@ -240,7 +240,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # --- FIFO 기반 투입 소진 출처 상세 추적 및 원료코드 생성 ---
+    # --- FIFO 기반 투입 소진 출처 상세 추적 및 원료코드 완벽 생성 ---
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     if raw_data_rows:
         f_row = raw_data_rows[0]
@@ -300,17 +300,21 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # 이미지 양식과 100% 동일하게 순서 및 컬럼 재구성
-        if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
+        # 이미지와 100% 동일한 구조의 7개 고정 컬럼 행 생성
+        if "휴무" not in row["note"]:
+            y_use_kg = int(round(row["yangsangchu_use"] / 1000.0, 0))
+            b_use_kg = int(round(row["yangbaechu_use"] / 1000.0, 0))
+            j_use_kg = int(round(row["jeokchae_use"] / 1000.0, 0))
+
             generated_code_rows.append(
                 {
                     "생산일자": row["date"],
-                    "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
-                    "양상추 투입(kg)": int(round(row["yangsangchu_use"] / 1000.0, 0)),
-                    "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
-                    "양배추 투입(kg)": int(round(row["yangbaechu_use"] / 1000.0, 0)),
-                    "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
-                    "적채 투입(kg)": int(round(row["jeokchae_use"] / 1000.0, 0)),
+                    "양상추 생성코드": y_code if y_use_kg > 0 else "-",
+                    "양상추 투입(kg)": y_use_kg if y_use_kg > 0 else 0,
+                    "양배추 생성코드": b_code if b_use_kg > 0 else "-",
+                    "양배추 투입(kg)": b_use_kg if b_use_kg > 0 else 0,
+                    "적채 생성코드": j_code if j_use_kg > 0 else "-",
+                    "적채 투입(kg)": j_use_kg if j_use_kg > 0 else 0,
                 }
             )
 
@@ -790,7 +794,7 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 (이미지 양식과 100% 동일한 순서) ---
+        # --- Tab 3: 원료코드 생성 (이미지 양식 7개 컬럼과 100% 일치) ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
@@ -799,6 +803,15 @@ if excel_file is not None:
 
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
+                # 7개 핵심 컬럼만 정확한 순서로 정렬
+                target_cols = [
+                    "생산일자",
+                    "양상추 생성코드", "양상추 투입(kg)",
+                    "양배추 생성코드", "양배추 투입(kg)",
+                    "적채 생성코드", "적채 투입(kg)"
+                ]
+                df_code_summary = df_code_summary[[c for c in target_cols if c in df_code_summary.columns]]
+
                 st.dataframe(df_code_summary, use_container_width=True)
 
                 code_buffer = io.BytesIO()
