@@ -243,7 +243,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
     # --- 일일 생산일지 시트로부터 항목별 준비량 및 투입량 추출 ---
     exclude_sheets = ["테스트", "원가", stock_sheet, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
-    
+
     daily_usage_by_date = {}
     for sheet in daily_sheets:
         try:
@@ -253,7 +253,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             p_date_raw = df_s.iloc[0, 0]
             _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
             formatted_p_date = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
-            
+
             items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
             prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
             actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]]
@@ -358,7 +358,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # Tab 3: 지정된 순서대로 [양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스] 정렬하여 행 구성
+        # Tab 3: 지정된 순서대로 [날짜 | 원재료 | 생성코드 | 투입량(kg) | 준비량(kg) | 소진매입일(상세) | 비고] 컬럼 구성
         date_usage = daily_usage_by_date.get(
             row["date"],
             {
@@ -380,14 +380,14 @@ def parse_and_convert_to_standard_ledger(excel_file):
             if use_val > 0 or prep_val > 0:
                 c_val = code_map.get(item_name, "-")
                 s_val = src_map.get(item_name, "-")
-                
+
                 generated_code_rows.append(
                     {
                         "날짜": row["date"],
                         "원재료": item_name,
                         "생성코드": c_val if use_val > 0 else "-",
-                        "준비량(kg)": round(prep_val / 1000.0, 1),
                         "투입량(kg)": round(use_val / 1000.0, 1),
+                        "준비량(kg)": round(prep_val / 1000.0, 1),
                         "소진매입일(상세)": s_val,
                         "비고": row["note"],
                     }
@@ -869,22 +869,23 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
+        # --- Tab 3: 원료코드 생성 및 일자별 정리 (요청된 컬럼 순서 적용) ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
-                "**구조**: `날짜` | `원재료` | `생성코드` | `준비량(kg)` | `투입량(kg)` | `소진매입일(상세)` | `비고`  \n"
+                "**구조**: `날짜` | `원재료` | `생성코드` | `투입량(kg)` | `준비량(kg)` | `소진매입일(상세)` | `비고` \n"
                 "**정렬**: 양상추 ➔ 양배추 ➔ 적채 ➔ 프릴아이스 순"
             )
 
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
+                # 요청하신 순서대로 정확히 지정: 날짜 | 원재료 | 생성코드 | 투입량(kg) | 준비량(kg) | 소진매입일(상세) | 비고
                 column_order = [
                     "날짜",
                     "원재료",
                     "생성코드",
-                    "준비량(kg)",
                     "투입량(kg)",
+                    "준비량(kg)",
                     "소진매입일(상세)",
                     "비고",
                 ]
