@@ -300,17 +300,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # 원료코드 생성 탭 전용 행 수집 (소진매입일 컬럼 완전히 제외)
+        # 원료코드 생성 탭 전용 행 수집 (소진매입일 컬럼만 숨기고, 생성된 원료코드는 명확하게 수집)
         if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
             generated_code_rows.append(
                 {
                     "생산일자": row["date"],
                     "양상추 투입(kg)": round(row["yangsangchu_use"] / 1000.0, 1),
-                    "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
+                    "양상추 생성코드": y_code,
                     "양배추 투입(kg)": round(row["yangbaechu_use"] / 1000.0, 1),
-                    "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
+                    "양배추 생성코드": b_code,
                     "적채 투입(kg)": round(row["jeokchae_use"] / 1000.0, 1),
-                    "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
+                    "적채 생성코드": j_code,
                     "비고": row["note"],
                 }
             )
@@ -791,7 +791,7 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 (소진매입일 셀 완전히 제거) ---
+        # --- Tab 3: 원료코드 생성 (생성된 원료코드 표기) ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
