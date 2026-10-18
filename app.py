@@ -305,7 +305,6 @@ def generate_salad_report(excel_file, csv_file):
 
     # 1. 매입자료 시트 원본 로트 파싱
     master_item_lots, stock_sheet_name = parse_stock_sheet_fifo(xls)
-    # 딥 카피를 떠서 순차 차감 시 원본 유지
     running_item_lots = copy.deepcopy(master_item_lots)
 
     # 2. 원료 매입 입고자료 / 수불부 파싱
@@ -396,15 +395,14 @@ def generate_salad_report(excel_file, csv_file):
         st.error("생산일지 시트에서 처리 가능한 데이터를 찾지 못했습니다.")
         return pd.DataFrame()
 
-    df_report = pd.DataFrame(records)
-
-    # 생산일자 및 품목 순서대로 차감 처리
-    def process_codes(row):
-        item = row["품목"]
-        lot = row["작업일지_롯트"]
-        has_lot = row["has_lot"]
-        prod_date = row["생산일자"]
-        act_kg = row["실투입 양 (kg)"]
+    # 순서 보장을 위한 순차 루프 기반 코드 생성
+    final_rows = []
+    for rec in records:
+        item = rec["품목"]
+        lot = rec["작업일지_롯트"]
+        has_lot = rec["has_lot"]
+        prod_date = rec["생산일자"]
+        act_kg = rec["실투입 양 (kg)"]
 
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
@@ -427,7 +425,7 @@ def generate_salad_report(excel_file, csv_file):
             code_purchase = ""
         else:
             all_lots = running_item_lots.get(lookup_item, [])
-            valid_lots = [lot for lot in all_lots if lot["yymmdd"] <= p_yymmdd]
+            valid_lots = [l for l in all_lots if l["yymmdd"] <= p_yymmdd]
 
             if not valid_lots or act_kg <= 0:
                 code_purchase = f"{p}{p_yymmdd}-K01({round(act_kg, 1)}kg)"
@@ -466,11 +464,13 @@ def generate_salad_report(excel_file, csv_file):
         else:
             is_match = "불일치(혼합/추측)"
 
-        return pd.Series([code_worklog, code_subul, code_purchase, is_match])
+        rec["작업일지 기준 코드"] = code_worklog
+        rec["수불부 기준 코드"] = code_subul
+        rec["매입자료 기준 코드"] = code_purchase
+        rec["일치여부"] = is_match
+        final_rows.append(rec)
 
-    df_report[["작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부"]] = (
-        df_report.apply(process_codes, axis=1)
-    )
+    df_report = pd.DataFrame(final_rows)
 
     return df_report[
         [
