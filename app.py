@@ -240,7 +240,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             }
         )
 
-    # --- FIFO 기반 투입 소진 출처 상세 추적 및 원료코드 생성 ---
+    # --- FIFO 기반 투입 소진 출처 상세 추적 및 코드 조합 생성 ---
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     if raw_data_rows:
         f_row = raw_data_rows[0]
@@ -300,22 +300,25 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # 원료코드 생성 탭 전용 행 수집 (소진매입일 컬럼만 숨기고, 생성된 원료코드는 명확하게 수집)
+        # 원료코드 생성탭 전용 행 수집
         if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
             generated_code_rows.append(
                 {
                     "생산일자": row["date"],
                     "양상추 투입(kg)": round(row["yangsangchu_use"] / 1000.0, 1),
-                    "양상추 생성코드": y_code,
+                    "양상추 소진매입일": y_src,
+                    "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
                     "양배추 투입(kg)": round(row["yangbaechu_use"] / 1000.0, 1),
-                    "양배추 생성코드": b_code,
+                    "양배추 소진매입일": b_src,
+                    "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
                     "적채 투입(kg)": round(row["jeokchae_use"] / 1000.0, 1),
-                    "적채 생성코드": j_code,
+                    "적채 소진매입일": j_src,
+                    "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
                     "비고": row["note"],
                 }
             )
 
-    # --- openpyxl 엑셀 파일 생성 ---
+    # --- openpyxl 엑셀 생성 ---
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "원재료 수불부"
@@ -708,7 +711,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
 # Streamlit 화면 구성 (3개 탭)
 # ---------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(
-    ["🔍 원료코드 대조표 (자동 연동)", "📊 표준 원재료 수불부 정리", "🏷️ 원료코드 생성"]
+    ["🔍 원료코드 대조표 (자동 연동)", "📊 표준 원재료 수불부 정리", "🏷️ 원료코드 생성 및 일자별 정리"]
 )
 
 if excel_file is not None:
@@ -791,7 +794,7 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 (생성된 원료코드 표기) ---
+        # --- Tab 3: 신규 추가! 원료코드 생성 및 일자별 정리 ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
@@ -804,10 +807,10 @@ if excel_file is not None:
 
                 code_buffer = io.BytesIO()
                 with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
-                    df_code_summary.to_excel(writer, index=False, sheet_name="원료코드_생성")
+                    df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
 
                 st.download_button(
-                    label="📥 원료코드 목록 엑셀 다운로드 (.xlsx)",
+                    label="📥 일자별 생성 원료코드 정리표 다운로드 (.xlsx)",
                     data=code_buffer.getvalue(),
                     file_name="일자별_생성_원료코드_목록.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
