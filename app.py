@@ -76,7 +76,6 @@ prefix_map = {
     "프릴아이스": "F",
 }
 
-# B=1: 양상추 매입, C=2: 양상추 재고 / E=4: 양배추 매입, F=5: 양배추 재고 / H=7: 적채 매입, I=8: 적채 재고
 item_col_map = {
     "양상추": {"purchase_col": 1, "stock_col": 2},
     "양배추": {"purchase_col": 4, "stock_col": 5},
@@ -97,6 +96,7 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
 
+    # YYYY-MM-DD 또는 YYYY.MM.DD
     m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
         yy = m_full.group(1)[2:]
@@ -116,6 +116,7 @@ def extract_yymmdd_and_mmdd(val):
 
     current_yy = datetime.now().strftime("%y")
 
+    # MM/DD 또는 MM.DD
     m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
     if m_short:
         p1 = m_short.group(1).zfill(2)
@@ -130,6 +131,7 @@ def extract_yymmdd_and_mmdd(val):
             dd = p2
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
+    # YYMMDD 6자리 숫자가 들어있는 경우
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
@@ -159,11 +161,6 @@ def find_stock_sheet_name(xls):
 
 
 def parse_stock_sheet_fifo(xls):
-    """
-    매입자료 시트 파싱:
-    - B, E, H열 매입 수량이 있는 행만 매입일자 로트로 등록
-    - 첫 번째 유효 데이터 행의 재고(C, F, I열)는 기초재고 로트로 등록
-    """
     item_lots = {item: [] for item in item_col_map}
     try:
         stock_sheet = find_stock_sheet_name(xls)
@@ -260,7 +257,6 @@ def parse_csv_purchase(uploaded_file):
 
 
 def get_latest_purchase_code(item_name, prod_date, df_csv):
-    """2번 수불부(CSV) 기준 최신 매입 코드 추출"""
     lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
     p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
     _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
@@ -303,14 +299,14 @@ def get_latest_purchase_code(item_name, prod_date, df_csv):
 def generate_salad_report(excel_file, csv_file):
     xls = pd.ExcelFile(excel_file)
 
-    # 1. 매입자료 시트 원본 로트 파싱
+    # 1. 매입자료 시트 파싱 및 차감용 큐 생성
     master_item_lots, stock_sheet_name = parse_stock_sheet_fifo(xls)
     running_item_lots = copy.deepcopy(master_item_lots)
 
-    # 2. 원료 매입 입고자료 / 수불부 파싱
+    # 2. 수불부 파싱
     df_csv = parse_csv_purchase(csv_file)
 
-    # 3. 일자별 생산 시트 순회
+    # 3. 일자별 생산 시트 수집
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [
         s
@@ -378,9 +374,13 @@ def generate_salad_report(excel_file, csv_file):
                     and lot_str.lower() != "none"
                 )
 
+                # 날짜 정렬용 YYMMDD 파싱
+                _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
+
                 records.append(
                     {
                         "생산일자": prod_date,
+                        "prod_yymmdd": prod_yymmdd,  # 정렬 키
                         "품목": str(item).strip(),
                         "작업일지_롯트": lot_str if has_lot else "없음",
                         "실투입 양 (kg)": round(a_val / 1000.0, 1),
@@ -395,18 +395,20 @@ def generate_salad_report(excel_file, csv_file):
         st.error("생산일지 시트에서 처리 가능한 데이터를 찾지 못했습니다.")
         return pd.DataFrame()
 
-    # 순서 보장을 위한 순차 루프 기반 코드 생성
+    # ★ 중요 보완 1: 생산일자(prod_yymmdd) 오름차순 정렬 후 순차적 재고 차감 진행
+    records.sort(key=lambda x: x["prod_yymmdd"])
+
     final_rows = []
     for rec in records:
         item = rec["품목"]
         lot = rec["작업일지_롯트"]
         has_lot = rec["has_lot"]
         prod_date = rec["생산일자"]
+        prod_yymmdd = rec["prod_yymmdd"]
         act_kg = rec["실투입 양 (kg)"]
 
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
-        _, p_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
 
         # 1. 작업일지 기준 코드
         if has_lot:
@@ -417,7 +419,7 @@ def generate_salad_report(excel_file, csv_file):
         else:
             code_worklog = "없음"
 
-        # 2. 수불부 기준 코드 (CSV 파일 기반)
+        # 2. 수불부 기준 코드 (2번 CSV 파일의 최근 매입일)
         code_subul = get_latest_purchase_code(item, prod_date, df_csv)
 
         # 3. 매입자료 기준 코드 (순차 FIFO 차감)
@@ -425,10 +427,11 @@ def generate_salad_report(excel_file, csv_file):
             code_purchase = ""
         else:
             all_lots = running_item_lots.get(lookup_item, [])
-            valid_lots = [l for l in all_lots if l["yymmdd"] <= p_yymmdd]
+            # 생산일자(prod_yymmdd) 이하의 입고분만 필터링
+            valid_lots = [l for l in all_lots if l["yymmdd"] <= prod_yymmdd]
 
             if not valid_lots or act_kg <= 0:
-                code_purchase = f"{p}{p_yymmdd}-K01({round(act_kg, 1)}kg)"
+                code_purchase = f"{p}{prod_yymmdd}-K01({round(act_kg, 1)}kg)"
             else:
                 remaining = act_kg
                 used_parts = []
@@ -447,7 +450,7 @@ def generate_salad_report(excel_file, csv_file):
                     used_parts.append(f"{code_str}({round(used, 1)}kg)")
 
                 if remaining > 0:
-                    latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else p_yymmdd
+                    latest_yymmdd = valid_lots[-1]["yymmdd"] if valid_lots else prod_yymmdd
                     v_code = valid_lots[-1].get("vendor", "K01") if valid_lots else "K01"
                     code_str = f"{p}{latest_yymmdd}-{v_code}"
                     used_parts.append(f"{code_str}({round(remaining, 1)}kg)[부족]")
