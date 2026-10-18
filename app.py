@@ -334,28 +334,28 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         data_rows.append(row_copy)
 
-        # Tab 3 전용 행 수집: 준비량 컬럼 추가
+        # Tab 3 전용 행 수집: [일자 | 원재료 | 생성코드 | 준비량 | 투입량 | 소진매입일 | 비고] 구조로 세로 정렬
         date_prep = prep_by_date.get(row["date"], {"양상추": 0.0, "양배추": 0.0, "적채": 0.0})
-        
-        if row["yangsangchu_use"] > 0 or row["yangbaechu_use"] > 0 or row["jeokchae_use"] > 0:
-            generated_code_rows.append(
-                {
-                    "생산일자": row["date"],
-                    "양상추 투입(kg)": round(row["yangsangchu_use"] / 1000.0, 1),
-                    "양상추 준비량(kg)": round(date_prep["양상추"] / 1000.0, 1),
-                    "양상추 소진매입일": y_src,
-                    "양상추 생성코드": y_code if row["yangsangchu_use"] > 0 else "-",
-                    "양배추 투입(kg)": round(row["yangbaechu_use"] / 1000.0, 1),
-                    "양배추 준비량(kg)": round(date_prep["양배추"] / 1000.0, 1),
-                    "양배추 소진매입일": b_src,
-                    "양배추 생성코드": b_code if row["yangbaechu_use"] > 0 else "-",
-                    "적채 투입(kg)": round(row["jeokchae_use"] / 1000.0, 1),
-                    "적채 준비량(kg)": round(date_prep["적채"] / 1000.0, 1),
-                    "적채 소진매입일": j_src,
-                    "적채 생성코드": j_code if row["jeokchae_use"] > 0 else "-",
-                    "비고": row["note"],
-                }
-            )
+
+        items_info = [
+            ("양상추", row["yangsangchu_use"], date_prep["양상추"], y_code, y_src),
+            ("양배추", row["yangbaechu_use"], date_prep["양배추"], b_code, b_src),
+            ("적채", row["jeokchae_use"], date_prep["적채"], j_code, j_src),
+        ]
+
+        for item_name, use_val, prep_val, code_val, src_val in items_info:
+            if use_val > 0 or prep_val > 0:
+                generated_code_rows.append(
+                    {
+                        "날짜": row["date"],
+                        "원재료": item_name,
+                        "생성코드": code_val if use_val > 0 else "-",
+                        "준비량(kg)": round(prep_val / 1000.0, 1),
+                        "투입량(kg)": round(use_val / 1000.0, 1),
+                        "소진매입일(상세)": src_val,
+                        "비고": row["note"],
+                    }
+                )
 
     # --- openpyxl 엑셀 생성 ---
     wb = openpyxl.Workbook()
@@ -833,15 +833,27 @@ if excel_file is not None:
                 use_container_width=True,
             )
 
-        # --- Tab 3: 원료코드 생성 및 일자별 정리 (준비량 추가 완료!) ---
+        # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             st.write(
-                "**규칙**: 양상추(`X`), 양배추(`D`), 적채(`A`), 프릴(`F`) + `YYMMDD`(소진 매입일자) + `-K1` 거래처 코드 자동 부여"
+                "**구조**: `날짜` | `원재료` | `생성코드` | `준비량(kg)` | `투입량(kg)` | `소진매입일(상세)` | `비고`"
             )
 
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
+                # 지정하신 순서대로 컬럼 배치 [날짜 | 원재료 | 생성코드 | 준비량(kg) | 투입량(kg) | 소진매입일(상세) | 비고]
+                column_order = [
+                    "날짜",
+                    "원재료",
+                    "생성코드",
+                    "준비량(kg)",
+                    "투입량(kg)",
+                    "소진매입일(상세)",
+                    "비고",
+                ]
+                df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
+
                 st.dataframe(df_code_summary, use_container_width=True)
 
                 code_buffer = io.BytesIO()
