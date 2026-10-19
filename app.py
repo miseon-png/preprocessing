@@ -173,7 +173,7 @@ with col2:
 prefix_map = {"양상추": "X", "양배추": "D", "적채": "A", "프릴": "F", "프릴아이스": "F"}
 
 # ---------------------------------------------------------
-# [오류 수정 완료] 날짜 파싱 왜곡(9/6 -> 9/1 현상) 완전 방지
+# [실제 생산일지 서식 대응] 날짜 완벽 정밀 추출 함수
 # ---------------------------------------------------------
 def extract_yymmdd_and_mmdd(val):
     if pd.isna(val):
@@ -184,23 +184,29 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
     
-    # YYYY-MM-DD 또는 YY-MM-DD
-    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
+    # 1. 26.0906 형식 (소수점 1개로 연결된 6자리 표현)
+    m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
+    if m_dot_digit:
+        yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
+
+    # 2. YYYY-MM-DD, YYYY.MM.DD, YY.MM.DD
+    m_full = re.search(r"(\d{2,4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
-        yy = m_full.group(1)[2:]
+        p1 = m_full.group(1)
+        yy = p1[2:] if len(p1) == 4 else p1.zfill(2)
         mm = m_full.group(2).zfill(2)
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # YYMMDD (6자리 숫자)
+    # 3. 6자리 연속 숫자 (260906)
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
         return d[:2], d, d[2:]
 
     current_yy = datetime.now().strftime("%y")
-    
-    # MM/DD 또는 MM월 DD일 정밀 파싱
+    # 4. 월/일 (MM/DD 또는 MM월 DD일)
     m_short = re.search(r"(\d{1,2})\s*[-./월]\s*(\d{1,2})", val_str)
     if m_short:
         mm = m_short.group(1).zfill(2)
@@ -490,7 +496,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [3번째 탭 code_summary_rows 정밀 연동] 1번째 탭 리포트 생성
+# [일일 생산일지 시트 날짜 A2(1행0열) 정밀 추출 로직]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -510,9 +516,13 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     records = []
     for sheet in daily_sheets:
         try:
-            df_s = pd.read_excel(excel_file, sheet_name=sheet)
+            df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
-            prod_date = df_s.iloc[0, 0]
+            
+            # 생산일지 시트에서 날짜는 1행 0열(A2 셀)에 정확히 위치함
+            prod_date = df_s.iloc[1, 0]
+            if pd.isna(prod_date) or "작업" in str(prod_date):
+                prod_date = df_s.iloc[0, 0]
 
             items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
             lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]
@@ -673,8 +683,6 @@ if excel_file is not None:
                 item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
                 df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
                 df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
-
-                st.dataframe(df_code_summary, use_container_width=True)
 
                 col_d3, col_p3 = st.columns([3, 1])
                 with col_d3:
