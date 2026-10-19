@@ -236,108 +236,82 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# 수불부 정제 및 DB 기반 FIFO 소진 추적
+# [완벽 수정] openpyxl로 A~J열 (0~9 인덱스) 데이터 직접 파싱
+# A(0):날짜 | B(1):양상추매입 | C(2):양상추기말 | D(3):양상추투입
+# E(4):양배추매입 | F(5):양배추기말 | G(6):양배추투입
+# H(7):적채매입   | I(8):적채기말   | J(9):적채투입
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
-    xls = pd.ExcelFile(excel_file)
-    stock_sheet = find_stock_sheet_name(xls)
-    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
+    wb_in = openpyxl.load_workbook(excel_file, data_only=True)
+    stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
+    ws_in = wb_in[stock_sheet]
 
     def parse_cell(val):
-        if pd.isna(val): return 0.0
+        if val is None: return 0.0
+        if isinstance(val, (int, float)): return float(val)
         try:
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
-        except Exception: return 0.0
+        except Exception:
+            return 0.0
 
-    pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
-    raw_data_rows = []
-    is_first_row = True
+    raw_parsed_list = []
 
-    for idx, row in df_raw.iterrows():
-        if len(row) == 0 or pd.isna(row.iloc[0]): continue
-        a_val = str(row.iloc[0]).strip()
-        if not a_val or a_val.lower() == "nan" or "날짜" in a_val or "매입" in a_val: continue
+    for row in ws_in.iter_rows(min_row=2, values_only=True):
+        if not row or row[0] is None: continue
+        raw_date = row[0]
+        if "날짜" in str(raw_date): continue
 
-        if "입고" in a_val:
-            pending_in["yangsangchu"] += parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
-            pending_in["yangbaechu"] += parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
-            pending_in["jeokchae"] += parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
-            continue
-
-        _, yymmdd, _ = extract_yymmdd_and_mmdd(row.iloc[0])
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_stock = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
-        y_use = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0
-        b_stock = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
-        b_use = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0
-        j_stock = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
-        j_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0
+        y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
+        y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
+        y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
 
-        y_in, b_in, j_in = pending_in["yangsangchu"], pending_in["yangbaechu"], pending_in["jeokchae"]
-        pending_in = {"yangsangchu": 0.0, "yangbaechu": 0.0, "jeokchae": 0.0}
+        b_in  = parse_cell(row[4]) if len(row) > 4 else 0.0
+        b_stk = parse_cell(row[5]) if len(row) > 5 else 0.0
+        b_use = parse_cell(row[6]) if len(row) > 6 else 0.0
 
-        if is_first_row:
-            y_beg, b_beg, j_beg = y_stock, b_stock, j_stock
-            is_first_row = False
-        else:
-            y_beg = b_beg = j_beg = 0.0
+        j_in  = parse_cell(row[7]) if len(row) > 7 else 0.0
+        j_stk = parse_cell(row[8]) if len(row) > 8 else 0.0
+        j_use = parse_cell(row[9]) if len(row) > 9 else 0.0
 
-        note = "휴무" if (y_in == 0 and y_use == 0 and b_in == 0 and b_use == 0 and j_in == 0 and j_use == 0 and y_stock == 0 and b_stock == 0 and j_stock == 0) else ""
-
-        raw_data_rows.append({
+        raw_parsed_list.append({
             "date": formatted_date, "yymmdd": yymmdd,
-            "yangsangchu_beg": y_beg, "yangsangchu_in": y_in, "yangsangchu_use": y_use, "yangsangchu_stock": y_stock,
-            "yangbaechu_beg": b_beg, "yangbaechu_in": b_in, "yangbaechu_use": b_use, "yangbaechu_stock": b_stock,
-            "jeokchae_beg": j_beg, "jeokchae_in": j_in, "jeokchae_use": j_use, "jeokchae_stock": j_stock,
-            "note": note
+            "y_in": y_in, "y_use": y_use, "y_stk": y_stk,
+            "b_in": b_in, "b_use": b_use, "b_stk": b_stk,
+            "j_in": j_in, "j_use": j_use, "j_stk": j_stk
         })
 
-    # --- 일일 생산일지 시트로부터 항목별 준비량 및 투입량 추출 ---
-    exclude_sheets = ["테스트", "원가", stock_sheet, "Sheet1", "sheet1"]
-    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
+    # 동일 날짜 행 통합 (합산)
+    grouped_by_date = {}
+    date_order = []
 
-    daily_usage_by_date = {}
-    for sheet in daily_sheets:
-        try:
-            df_s = pd.read_excel(xls, sheet_name=sheet)
-            if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
-            p_date_raw = df_s.iloc[0, 0]
-            _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
-            formatted_p_date = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
+    for item in raw_parsed_list:
+        dt = item["date"]
+        if dt not in grouped_by_date:
+            grouped_by_date[dt] = {
+                "date": dt, "yymmdd": item["yymmdd"],
+                "y_in": 0.0, "y_use": 0.0, "y_stk": 0.0,
+                "b_in": 0.0, "b_use": 0.0, "b_stk": 0.0,
+                "j_in": 0.0, "j_use": 0.0, "j_stk": 0.0
+            }
+            date_order.append(dt)
 
-            items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
-            prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
-            actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]]
+        grouped_by_date[dt]["y_in"] += item["y_in"]
+        grouped_by_date[dt]["b_in"] += item["b_in"]
+        grouped_by_date[dt]["j_in"] += item["j_in"]
 
-            if formatted_p_date not in daily_usage_by_date:
-                daily_usage_by_date[formatted_p_date] = {
-                    "양상추": {"prep": 0.0, "use": 0.0}, "양배추": {"prep": 0.0, "use": 0.0},
-                    "적채": {"prep": 0.0, "use": 0.0}, "프릴아이스": {"prep": 0.0, "use": 0.0}
-                }
+        grouped_by_date[dt]["y_use"] += item["y_use"]
+        grouped_by_date[dt]["b_use"] += item["b_use"]
+        grouped_by_date[dt]["j_use"] += item["j_use"]
 
-            for itm, prp, act in zip(items, prep_pck, actual_input):
-                if pd.isna(itm): continue
-                itm_str = str(itm).strip()
-                try: prp_val = float(prp) if pd.notna(prp) else 0.0
-                except (ValueError, TypeError): prp_val = 0.0
+        if item["y_stk"] > 0: grouped_by_date[dt]["y_stk"] = item["y_stk"]
+        if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
+        if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
 
-                try: act_val = float(act) if pd.notna(act) else 0.0
-                except (ValueError, TypeError): act_val = 0.0
-
-                matched_key = None
-                if "양상추" in itm_str: matched_key = "양상추"
-                elif "양배추" in itm_str: matched_key = "양배추"
-                elif "적채" in itm_str: matched_key = "적채"
-                elif "프릴" in itm_str: matched_key = "프릴아이스"
-
-                if matched_key:
-                    daily_usage_by_date[formatted_p_date][matched_key]["prep"] += prp_val
-                    daily_usage_by_date[formatted_p_date][matched_key]["use"] += act_val
-        except Exception: continue
-
-    # --- FIFO 큐 구성 (전월 마감 DB 연결) ---
+    # FIFO 소진 큐 생성 (DB 매입 연동)
     _, db_lots = get_latest_closed_lots()
     item_queues = {
         "yangsangchu": copy.deepcopy(db_lots["양상추"]),
@@ -345,36 +319,18 @@ def parse_and_convert_to_standard_ledger(excel_file):
         "jeokchae": copy.deepcopy(db_lots["적채"])
     }
 
-    if raw_data_rows:
-        f_row = raw_data_rows[0]
-        if not item_queues["yangsangchu"] and f_row["yangsangchu_beg"] > 0:
-            item_queues["yangsangchu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangsangchu_beg"], "vendor": "K1"})
-        if not item_queues["yangbaechu"] and f_row["yangbaechu_beg"] > 0:
-            item_queues["yangbaechu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["yangbaechu_beg"], "vendor": "K1"})
-        if not item_queues["jeokchae"] and f_row["jeokchae_beg"] > 0:
-            item_queues["jeokchae"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 기초", "avail": f_row["jeokchae_beg"], "vendor": "K1"})
-
-    for k in item_queues:
-        for q in item_queues[k]:
-            if "avail" not in q:
-                q["avail"] = q.get("avail_g", 0.0)
-            if "label" not in q:
-                q["label"] = f"{q['yymmdd'][2:4]}/{q['yymmdd'][4:]} 이월"
-
     data_rows = []
     generated_code_rows = []
     target_items_order = ["양상추", "양배추", "적채"]
 
-    for row in raw_data_rows:
-        row_copy = copy.deepcopy(row)
-        mmdd_str = f"{row['yymmdd'][2:4]}/{row['yymmdd'][4:]}"
+    for dt in date_order:
+        g = grouped_by_date[dt]
+        yymmdd = g["yymmdd"]
+        mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        if row["yangsangchu_in"] > 0:
-            item_queues["yangsangchu"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["yangsangchu_in"], "vendor": "K1"})
-        if row["yangbaechu_in"] > 0:
-            item_queues["yangbaechu"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["yangbaechu_in"], "vendor": "K1"})
-        if row["jeokchae_in"] > 0:
-            item_queues["jeokchae"].append({"yymmdd": row["yymmdd"], "label": f"{mmdd_str} 매입", "avail": row["jeokchae_in"], "vendor": "K1"})
+        if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
+        if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
+        if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
 
         def trace_usage(item_key, item_prefix, use_amount):
             if use_amount <= 0: return "-", "-"
@@ -394,47 +350,35 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
             if rem > 0:
                 used_sources.append(f"부족({round(rem/1000.0, 1)}kg)")
-                used_codes.append(f"{item_prefix}{row['yymmdd']}-K1[부족]")
+                used_codes.append(f"{item_prefix}{yymmdd}-K1[부족]")
 
             return " / ".join(used_sources), " / ".join(list(dict.fromkeys(used_codes)))
 
-        y_src, y_code = trace_usage("yangsangchu", "X", row["yangsangchu_use"])
-        b_src, b_code = trace_usage("yangbaechu", "D", row["yangbaechu_use"])
-        j_src, j_code = trace_usage("jeokchae", "A", row["jeokchae_use"])
+        y_src, y_code = trace_usage("yangsangchu", "X", g["y_use"])
+        b_src, b_code = trace_usage("yangbaechu", "D", g["b_use"])
+        j_src, j_code = trace_usage("jeokchae", "A", g["j_use"])
 
-        row_copy["yangsangchu_source"], row_copy["yangbaechu_source"], row_copy["jeokchae_source"] = y_src, b_src, j_src
-        data_rows.append(row_copy)
+        note = "휴무" if (g["y_in"] == 0 and g["y_use"] == 0 and g["b_in"] == 0 and g["b_use"] == 0 and g["j_in"] == 0 and g["j_use"] == 0) else ""
 
-        date_usage = daily_usage_by_date.get(
-            row["date"],
-            {
-                "양상추": {"prep": 0.0, "use": row["yangsangchu_use"]},
-                "양배추": {"prep": 0.0, "use": row["yangbaechu_use"]},
-                "적채": {"prep": 0.0, "use": row["jeokchae_use"]},
-                "프릴아이스": {"prep": 0.0, "use": 0.0},
-            },
-        )
+        row_data = {
+            "date": dt, "yymmdd": yymmdd,
+            "yangsangchu_in": g["y_in"], "yangsangchu_use": g["y_use"], "yangsangchu_source": y_src, "yangsangchu_stock": g["y_stk"],
+            "yangbaechu_in": g["b_in"], "yangbaechu_use": g["b_use"], "yangbaechu_source": b_src, "yangbaechu_stock": g["b_stk"],
+            "jeokchae_in": g["j_in"], "jeokchae_use": g["j_use"], "jeokchae_source": j_src, "jeokchae_stock": g["j_stk"],
+            "note": note
+        }
+        data_rows.append(row_data)
 
         code_map = {"양상추": y_code, "양배추": b_code, "적채": j_code}
         src_map = {"양상추": y_src, "양배추": b_src, "적채": j_src}
+        use_map = {"양상추": g["y_use"], "양배추": g["b_use"], "적채": g["j_use"]}
 
         for item_name in target_items_order:
-            info = date_usage.get(item_name, {"prep": 0.0, "use": 0.0})
-            use_val = info["use"] if info["use"] > 0 else (row["yangsangchu_use"] if item_name == "양상추" else (row["yangbaechu_use"] if item_name == "양배추" else (row["jeokchae_use"] if item_name == "적채" else 0.0)))
-            prep_val = info["prep"]
-
-            if use_val > 0 or prep_val > 0:
-                c_val = code_map.get(item_name, "-")
-                s_val = src_map.get(item_name, "-")
-
+            u_val = use_map[item_name]
+            if u_val > 0:
                 generated_code_rows.append({
-                    "날짜": row["date"],
-                    "원재료": item_name,
-                    "생성코드": c_val if use_val > 0 else "-",
-                    "투입량(kg)": round(use_val / 1000.0, 1),
-                    "준비량(kg)": round(prep_val / 1000.0, 1),
-                    "소진매입일(상세)": s_val,
-                    "비고": row["note"],
+                    "날짜": dt, "원재료": item_name, "생성코드": code_map.get(item_name, "-"),
+                    "투입량(kg)": round(u_val / 1000.0, 1), "준비량(kg)": 0.0, "소진매입일(상세)": src_map.get(item_name, "-"), "비고": note
                 })
 
     # --- openpyxl 엑셀 생성 ---
@@ -449,318 +393,4 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     header_fill_main = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     header_fill_sub = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-    zebra_fill = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
-    rest_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-    header_font_main = Font(name="맑은 고딕", size=11, bold=True, color="FFFFFF")
-    header_font_sub = Font(name="맑은 고딕", size=10, bold=True, color="1F4E79")
     regular_font = Font(name="맑은 고딕", size=10)
-    thin_border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
-                         top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
-
-    headers_main = [("A2:A3", "일자"), ("B2:F2", "양상추"), ("G2:K2", "양배추"), ("L2:P2", "적채"), ("Q2:Q3", "비고")]
-    for cell_range, title in headers_main:
-        ws.merge_cells(cell_range)
-        ws[cell_range.split(":")[0]] = title
-
-    for col_idx in range(1, 18):
-        c = ws.cell(row=2, column=col_idx)
-        c.fill, c.font, c.alignment = header_fill_main, header_font_main, Alignment(horizontal="center", vertical="center")
-
-    sub_headers = ["기초재고", "입고량", "투입량", "소진 매입일자(상세)", "기말재고"]
-    for start_col in [2, 7, 12]:
-        for idx, sub in enumerate(sub_headers):
-            c = ws.cell(row=3, column=start_col + idx, value=sub)
-            c.fill, c.font, c.alignment = header_fill_sub, header_font_sub, Alignment(horizontal="center", vertical="center")
-
-    start_row = 4
-    for r_idx, item in enumerate(data_rows, start=start_row):
-        ws.cell(row=r_idx, column=1, value=item["date"]).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=r_idx, column=17, value=item.get("note", "")).alignment = Alignment(horizontal="left", vertical="center")
-
-        items_map = [
-            (2, item.get("yangsangchu_beg", 0), item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0), item.get("yangsangchu_source", "-")),
-            (7, item.get("yangbaechu_beg", 0), item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0), item.get("yangbaechu_source", "-")),
-            (12, item.get("jeokchae_beg", 0), item.get("jeokchae_in", 0), item.get("jeokchae_use", 0), item.get("jeokchae_source", "-"))
-        ]
-
-        for start_col, beg_val, in_val, use_val, source_str in items_map:
-            end_col_let = get_column_letter(start_col + 4)
-            if r_idx == start_row: ws.cell(row=r_idx, column=start_col, value=beg_val)
-            else: ws.cell(row=r_idx, column=start_col, value=f"={end_col_let}{r_idx-1}")
-
-            ws.cell(row=r_idx, column=start_col + 1, value=in_val)
-            ws.cell(row=r_idx, column=start_col + 2, value=use_val)
-            ws.cell(row=r_idx, column=start_col + 3, value=source_str).alignment = Alignment(horizontal="center", vertical="center")
-
-            c_beg, c_in, c_use = get_column_letter(start_col), get_column_letter(start_col + 1), get_column_letter(start_col + 2)
-            ws.cell(row=r_idx, column=start_col + 4, value=f"={c_beg}{r_idx}+{c_in}{r_idx}-{c_use}{r_idx}")
-
-        is_rest = "휴무" in item.get("note", "")
-        for c_idx in range(1, 18):
-            cell = ws.cell(row=r_idx, column=c_idx)
-            cell.font, cell.border = regular_font, thin_border
-            if c_idx in [2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16]:
-                cell.number_format = "#,##0"
-                cell.alignment = Alignment(horizontal="right", vertical="center")
-            if is_rest: cell.fill = rest_fill
-            elif r_idx % 2 == 1: cell.fill = zebra_fill
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-
-    final_remaining_lots = {
-        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q["avail"] > 0],
-        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q["avail"] > 0],
-        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q["avail"] > 0]
-    }
-
-    return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet, final_remaining_lots
-
-def parse_csv_purchase(uploaded_file):
-    if uploaded_file is None: return pd.DataFrame()
-    file_name = uploaded_file.name.lower()
-    if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
-        try: return pd.read_excel(uploaded_file)
-        except Exception: return pd.DataFrame()
-
-    encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
-    for enc in encodings:
-        try:
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, encoding=enc)
-        except Exception: continue
-    return pd.DataFrame()
-
-def get_latest_purchase_code(item_name, prod_date, df_csv):
-    lookup_item = "프릴아이스" if "프릴" in str(item_name) else str(item_name).strip()
-    p_code = prefix_map.get(lookup_item, prefix_map.get(str(item_name).strip(), "X"))
-    _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(prod_date)
-    v_code = "F01" if p_code == "F" else "K1"
-
-    if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
-        try:
-            df_filtered = df_csv[df_csv.astype(str).apply(lambda r: r.str.contains(lookup_item, regex=False).any(), axis=1)]
-            if not df_filtered.empty:
-                candidate_rows = []
-                for _, r in df_filtered.iterrows():
-                    row_str = " ".join(r.dropna().astype(str).tolist())
-                    _, r_yymmdd, r_mmdd = extract_yymmdd_and_mmdd(row_str)
-                    if r_yymmdd <= p_yymmdd:
-                        candidate_rows.append((r_yymmdd, r_mmdd, row_str))
-
-                if candidate_rows:
-                    candidate_rows.sort(key=lambda x: x[0])
-                    matched_yymmdd, row_str = candidate_rows[-1][0], candidate_rows[-1][2]
-                    vendor_find = re.search(r"\b([A-Z]\d{2})\b", row_str)
-                    if vendor_find: v_code = vendor_find.group(1)
-                    return f"{p_code}{matched_yymmdd}-{v_code}"
-        except Exception: pass
-    return f"{p_code}{p_yymmdd}-{v_code}"
-
-def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
-    xls = pd.ExcelFile(excel_file)
-    df_csv = parse_csv_purchase(csv_file)
-
-    exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
-    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
-
-    records = []
-    for sheet in daily_sheets:
-        try:
-            df_s = pd.read_excel(excel_file, sheet_name=sheet)
-            if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
-            prod_date = df_s.iloc[0, 0]
-
-            items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
-            lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]
-            prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
-            actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]]
-
-            for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
-                if pd.isna(item) or str(item).strip() == "" or str(item).strip().lower() == "nan": continue
-                try: p_val = float(prep) if pd.notna(prep) else 0.0
-                except (ValueError, TypeError): p_val = 0.0
-
-                try: a_val = float(act) if pd.notna(act) else 0.0
-                except (ValueError, TypeError): a_val = 0.0
-
-                lot_str = str(lot).strip() if pd.notna(lot) else ""
-                has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
-                _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
-
-                records.append({
-                    "생산일자": prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
-                    "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
-                    "실투입 양 (kg)": round(a_val / 1000.0, 1), "준비 양 (kg)": round(p_val / 1000.0, 1),
-                    "has_lot": has_lot,
-                })
-        except Exception: continue
-
-    if not records: return pd.DataFrame()
-    records.sort(key=lambda x: x["prod_yymmdd"])
-
-    final_rows = []
-    for rec in records:
-        item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
-        prod_date, prod_yymmdd, act_g = rec["생산일자"], rec["prod_yymmdd"], rec["act_g"]
-        lookup_item = "프릴아이스" if "프릴" in item else item
-        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
-
-        if has_lot:
-            _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
-            code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
-        else: code_worklog = "없음"
-
-        code_subul = get_latest_purchase_code(item, prod_date, df_csv)
-
-        # 소진 매입자료 기준 코드 매핑
-        code_purchase = code_subul
-
-        if code_worklog != "없음" and code_purchase != "" and code_worklog in code_purchase: is_match = "일치"
-        elif code_worklog != "없음" and code_purchase == "" and code_worklog == code_subul: is_match = "일치"
-        elif code_worklog == "없음": is_match = "불일치(작업일지 미기재)"
-        else: is_match = "불일치(혼합/추측)"
-
-        rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
-        final_rows.append(rec)
-
-    df_report = pd.DataFrame(final_rows)
-    return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
-
-# ---------------------------------------------------------
-# Streamlit 화면 구성 (4개 탭)
-# ---------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔍 원료코드 대조표 (자동 연동)",
-    "📊 표준 원재료 수불부 정리",
-    "🏷️ 원료코드 생성 및 일자별 정리",
-    "🔒 당월 수불 마감 확정"
-])
-
-if excel_file is not None:
-    try:
-        excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
-
-        # --- Tab 1: 원료코드 대조표 ---
-        with tab1:
-            df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
-            if not df_result.empty:
-                st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
-                st.dataframe(df_result, use_container_width=True)
-
-                html_table = df_result.to_html(classes="print-table", index=False)
-                st.markdown(f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>', unsafe_allow_html=True)
-
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
-
-                st.download_button(
-                    label="📥 원료코드 대조표 다운로드 (.xlsx)",
-                    data=buffer.getvalue(),
-                    file_name="원료코드_비교_정리표.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-                st.caption("💡 Tip: 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
-
-        # --- Tab 2: 표준 원재료 수불부 (깔끔한 한국어 컬럼 정제 미리보기) ---
-        with tab2:
-            st.subheader("📋 표준 원재료 수불부 자동 생성 (투입 소진 매입일자 추적)")
-            st.write("기존 매입자료 시트를 **[일자 | 기초재고 | 입고량 | 투입량 | 소진 매입일자(상세) | 기말재고]** 구조의 깨끗한 표준 수불부 엑셀 문서로 정제해 드립니다.")
-
-            df_preview = pd.DataFrame(standard_rows)
-            if "yymmdd" in df_preview.columns:
-                df_preview = df_preview.drop(columns=["yymmdd"])
-
-            ordered_cols = [
-                "date",
-                "yangsangchu_in", "yangsangchu_use", "yangsangchu_source", "yangsangchu_stock",
-                "yangbaechu_in", "yangbaechu_use", "yangbaechu_source", "yangbaechu_stock",
-                "jeokchae_in", "jeokchae_use", "jeokchae_source", "jeokchae_stock",
-                "note"
-            ]
-            df_preview = df_preview[[col for col in ordered_cols if col in df_preview.columns]]
-
-            korean_column_map = {
-                "date": "일자",
-                "yangsangchu_in": "양상추_입고량", "yangsangchu_use": "양상추_투입량", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고",
-                "yangbaechu_in": "양배추_입고량", "yangbaechu_use": "양배추_투입량", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고",
-                "jeokchae_in": "적채_입고량", "jeokchae_use": "적채_투입량", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고",
-                "note": "비고",
-            }
-            df_preview = df_preview.rename(columns=korean_column_map)
-
-            st.write("▼ [입고량 ➔ 투입량 ➔ 소진 매입일자(상세) ➔ 기말재고] 정제 수불부 미리보기")
-            st.dataframe(df_preview, use_container_width=True)
-
-            st.download_button(
-                label="📥 정리된 표준 원재료 수불부 엑셀 다운로드 (.xlsx)",
-                data=excel_bytes,
-                file_name="표준_원재료_수불부(소진추적포함).xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-        # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
-        with tab3:
-            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
-            st.write("**구조**: `날짜` | `원재료` | `생성코드` | `투입량(kg)` | `준비량(kg)` | `소진매입일(상세)` | `비고` \n"
-                     "**정렬**: 양상추 ➔ 양배추 ➔ 적채 순")
-
-            df_code_summary = pd.DataFrame(code_summary_rows)
-            if not df_code_summary.empty:
-                column_order = ["날짜", "원재료", "생성코드", "투입량(kg)", "준비량(kg)", "소진매입일(상세)", "비고"]
-                df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
-
-                item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
-                df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
-                df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
-
-                st.dataframe(df_code_summary, use_container_width=True)
-
-                code_buffer = io.BytesIO()
-                with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
-                    df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
-
-                st.download_button(
-                    label="📥 일자별 생성 원료코드 정리표 다운로드 (.xlsx)",
-                    data=code_buffer.getvalue(),
-                    file_name="일자별_생성_원료코드_목록.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-        # --- Tab 4: 당월 수불 마감 확정 ---
-        with tab4:
-            st.subheader("🔒 당월 수불 마감 및 전월 DB 확정")
-            st.info("당월 수불 검토가 완료되면 아래 마감 버튼을 눌러 **기말 잔여 롯트를 DB에 저장/확정**하세요.\n다음 달 수불 계산 시 이 데이터가 '기초 이월 롯트'로 자동 연동됩니다.")
-
-            last_date_str = standard_rows[-1]["date"] if standard_rows else datetime.now().strftime("%Y-%m-%d")
-            default_ym = last_date_str[:7]
-            closed_ym_input = st.text_input("마감 확정 월 (YYYY-MM)", value=default_ym)
-
-            st.write("▼ **마감 후 다음 달로 이월될 잔여 롯트 미리보기**")
-            for item_k, l_list in final_lots.items():
-                st.write(f"• **{item_k}**: {len(l_list)}개 롯트 잔여")
-                for l in l_list:
-                    st.caption(f"   - 입고일: {l['yymmdd']} | 잔여량: {round(l['avail_g']/1000.0, 1)}kg")
-
-            if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
-                save_closed_lots(closed_ym_input, final_lots)
-                st.balloons()
-                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! 다음 달 수불 계산 시 반영됩니다.")
-
-    except Exception as e:
-        st.error(f"처리 중 오류가 발생했습니다: {e}")
-        st.code(traceback.format_exc())
-else:
-    with tab1:
-        st.info("👆 상단에서 1. 샐러드 생산일지 엑셀 파일과 2. 원료 매입 수불부를 업로드해 주세요.")
-    with tab2:
-        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 자동으로 정제된 수불부가 생성됩니다.")
-    with tab3:
-        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 일자별로 자동 생성된 원료코드 표가 출력됩니다.")
-    with tab4:
-        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 마감 대상 잔여 롯트를 확인할 수 있습니다.")
