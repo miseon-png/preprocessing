@@ -349,14 +349,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
             "yangsangchu_in": round(g["y_in"] / 1000.0, 1), 
             "yangsangchu_use": round(g["y_use"] / 1000.0, 1), 
             "yangsangchu_source": y_src, 
+            "yangsangchu_code": y_code,
             "yangsangchu_stock": round(g["y_stk"] / 1000.0, 1),
             "yangbaechu_in": round(g["b_in"] / 1000.0, 1), 
             "yangbaechu_use": round(g["b_use"] / 1000.0, 1), 
             "yangbaechu_source": b_src, 
+            "yangbaechu_code": b_code,
             "yangbaechu_stock": round(g["b_stk"] / 1000.0, 1),
             "jeokchae_in": round(g["j_in"] / 1000.0, 1), 
             "jeokchae_use": round(g["j_use"] / 1000.0, 1), 
             "jeokchae_source": j_src, 
+            "jeokchae_code": j_code,
             "jeokchae_stock": round(g["j_stk"] / 1000.0, 1),
             "note": note
         }
@@ -478,9 +481,19 @@ def parse_csv_purchase(uploaded_file):
         except Exception: continue
     return pd.DataFrame()
 
+# ---------------------------------------------------------
+# [완벽 연동 수정] FIFO 수불부 연동 소진 코드로 원료코드 대조표 생성
+# ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
-    df_csv = parse_csv_purchase(csv_file)
+
+    # 2번째 탭 수불부 소진 코드 맵핑 사전 구축 (날짜 + 품목 기준)
+    subul_code_map = {}
+    for r in standard_rows:
+        dt = r["date"]
+        subul_code_map[(dt, "양상추")] = r.get("yangsangchu_code", "-")
+        subul_code_map[(dt, "양배추")] = r.get("yangbaechu_code", "-")
+        subul_code_map[(dt, "적채")] = r.get("jeokchae_code", "-")
 
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
@@ -509,8 +522,10 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                 has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
                 _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
 
+                formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
+
                 records.append({
-                    "생산일자": prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
+                    "생산일자": formatted_prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
                     "실투입 양 (kg)": round(a_val / 1000.0, 1), "준비 양 (kg)": round(p_val / 1000.0, 1),
                     "has_lot": has_lot,
@@ -523,7 +538,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
     final_rows = []
     for rec in records:
         item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
-        prod_date, prod_yymmdd, act_g = rec["생산일자"], rec["prod_yymmdd"], rec["act_g"]
+        prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
         lookup_item = "프릴아이스" if "프릴" in item else item
         p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
 
@@ -532,13 +547,20 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        code_subul = f"{p}{prod_yymmdd}-K1"
+        # 수불부 실제 소진 매입 롯트 연동
+        code_subul = subul_code_map.get((prod_date, lookup_item), f"{p}{prod_yymmdd}-K1")
+        if code_subul == "-" or not code_subul:
+            code_subul = f"{p}{prod_yymmdd}-K1"
+
         code_purchase = code_subul
 
-        if code_worklog != "없음" and code_purchase != "" and code_worklog in code_purchase: is_match = "일치"
-        elif code_worklog != "없음" and code_purchase == "" and code_worklog == code_subul: is_match = "일치"
-        elif code_worklog == "없음": is_match = "불일치(작업일지 미기재)"
-        else: is_match = "불일치(혼합/추측)"
+        # 대조 판정 로직
+        if code_worklog != "없음" and (code_worklog in code_subul or code_worklog == f"{p}{prod_yymmdd}-K1"):
+            is_match = "일치"
+        elif code_worklog == "없음":
+            is_match = "불일치(작업일지 미기재)"
+        else:
+            is_match = "불일치(혼합/추측)"
 
         rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
         final_rows.append(rec)
@@ -665,7 +687,7 @@ if excel_file is not None:
             if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
                 save_closed_lots(closed_ym_input, final_lots)
                 st.balloons()
-                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! (양상추 264.0kg / 양배추 145.0kg / 적채 81.0kg)")
+                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다!")
 
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
