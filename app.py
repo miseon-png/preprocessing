@@ -482,18 +482,20 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [프릴/프릴아이스 예외 처리 반영] 1번째 탭 리포트 생성
+# [3번째 탭 code_summary_rows 직통 정밀 연동] 1번째 탭 리포트 생성
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
-    # 3번째 탭 원료코드 사전 구축
+    # 3번째 탭 원료코드 사전 구축 (날짜 날짜형식 정제 보장)
     code_summary_map = {}
     for r in code_summary_rows:
-        dt = r.get("날짜", "")
+        raw_dt = r.get("날짜", "")
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_dt)
+        std_dt = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
         item = r.get("원재료", "").strip()
         c_code = r.get("생성코드", "-")
-        code_summary_map[(dt, item)] = c_code
+        code_summary_map[(std_dt, item)] = c_code
 
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
@@ -540,7 +542,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         raw_item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
         prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
         
-        # '프릴' / '프릴아이스' 예외 판단
         is_frill = "프릴" in raw_item
 
         if "양상추" in raw_item: lookup_item = "양상추"
@@ -556,13 +557,14 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        # 프릴계열 품목은 3번째 탭에 없으므로 수불부 기준코드를 공란('-')으로 설정
+        # 프릴계열 품목은 공란('-') 처리
         if is_frill:
             code_subul = "-"
             code_purchase = "-"
             is_match = "불일치(수불부 대상 제외 품목)"
         else:
-            code_subul = code_summary_map.get((prod_date, lookup_item), f"{p}{prod_yymmdd}-K1")
+            # 3번째 탭에서 정제된 코드를 정확히 가져옴
+            code_subul = code_summary_map.get((prod_date, lookup_item), "-")
             if not code_subul or code_subul == "-":
                 code_subul = f"{p}{prod_yymmdd}-K1"
 
@@ -582,7 +584,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성 (4개 탭)
+# Streamlit 화면 구성
 # ---------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 원료코드 대조표 (자동 연동)",
