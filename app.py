@@ -25,7 +25,6 @@ def generate_sample_excel_template():
     ws.title = "원재료 매입 및 수불"
     ws.views.sheetView[0].showGridLines = True
 
-    # 헤더 설정 (A~J열)
     headers = [
         "날짜", 
         "양상추매입", "양상추", "양상추 투입", 
@@ -47,7 +46,6 @@ def generate_sample_excel_template():
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # 예시 샘플 데이터 기입
     sample_data = [
         ["2026-09-04", 800000, None, None, 200000, None, None, 100000, None, None],
         ["2026-09-05", None, None, None, None, None, None, None, None, None],
@@ -68,7 +66,6 @@ def generate_sample_excel_template():
                 cell.number_format = "#,##0"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
-    # 컬럼 너비 조정
     ws.column_dimensions["A"].width = 14
     for c_let in ["B", "C", "D", "E", "F", "G", "H", "I", "J"]:
         ws.column_dimensions[c_let].width = 15
@@ -165,9 +162,6 @@ st.markdown("""
 
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
 
-# ---------------------------------------------------------
-# 상단 입력 및 표준 양식 다운로드 영역
-# ---------------------------------------------------------
 st.subheader("📁 입력 파일 업로드 및 양식 다운로드")
 col_down, col_blank = st.columns([1, 3])
 with col_down:
@@ -244,7 +238,7 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# C, F, I열 = [기말재고] 매핑 기반 정제 및 FIFO 연동
+# [수정 완료] 수불부 엑셀 D, G, J열 투입량 100% 반영 & FIFO 소진 매입일 정확 매핑
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
@@ -292,34 +286,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
         grouped_by_date[formatted_date]["b_in"] += b_in
         grouped_by_date[formatted_date]["j_in"] += j_in
 
-        if y_use > 0 or y_stk > 0: grouped_by_date[formatted_date]["y_use"] += y_use; grouped_by_date[formatted_date]["y_stk"] = y_stk
-        if b_use > 0 or b_stk > 0: grouped_by_date[formatted_date]["b_use"] += b_use; grouped_by_date[formatted_date]["b_stk"] = b_stk
-        if j_use > 0 or j_stk > 0: grouped_by_date[formatted_date]["j_use"] += j_use; grouped_by_date[formatted_date]["j_stk"] = j_stk
+        grouped_by_date[formatted_date]["y_use"] += y_use
+        grouped_by_date[formatted_date]["b_use"] += b_use
+        grouped_by_date[formatted_date]["j_use"] += j_use
+
+        if y_stk > 0: grouped_by_date[formatted_date]["y_stk"] = y_stk
+        if b_stk > 0: grouped_by_date[formatted_date]["b_stk"] = b_stk
+        if j_stk > 0: grouped_by_date[formatted_date]["j_stk"] = j_stk
 
     # --- FIFO 큐 구성 ---
-    _, db_lots = get_latest_closed_lots()
-    item_queues = {
-        "yangsangchu": copy.deepcopy(db_lots["양상추"]),
-        "yangbaechu": copy.deepcopy(db_lots["양배추"]),
-        "jeokchae": copy.deepcopy(db_lots["적채"])
-    }
-
+    item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     sorted_dates = sorted(grouped_by_date.keys())
-    
-    if sorted_dates:
-        f_dt = sorted_dates[0]
-        f_row = grouped_by_date[f_dt]
-        if not item_queues["yangsangchu"] and f_row["y_stk"] > 0:
-            item_queues["yangsangchu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 이월", "avail": f_row["y_stk"], "vendor": "K1"})
-        if not item_queues["yangbaechu"] and f_row["b_stk"] > 0:
-            item_queues["yangbaechu"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 이월", "avail": f_row["b_stk"], "vendor": "K1"})
-        if not item_queues["jeokchae"] and f_row["j_stk"] > 0:
-            item_queues["jeokchae"].append({"yymmdd": f_row["yymmdd"], "label": f"{f_row['yymmdd'][2:4]}/{f_row['yymmdd'][4:]} 이월", "avail": f_row["j_stk"], "vendor": "K1"})
-
-    for k in item_queues:
-        for q in item_queues[k]:
-            if "avail" not in q: q["avail"] = q.get("avail_g", 0.0)
-            if "label" not in q: q["label"] = f"{q['yymmdd'][2:4]}/{q['yymmdd'][4:]} 이월"
 
     data_rows = []
     generated_code_rows = []
@@ -330,6 +307,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
+        # 당일 매입 롯트 우선 추가
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
@@ -465,7 +443,7 @@ if excel_file is not None:
         excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
 
         with tab1:
-            st.subheader("📋 표준 원재료 수불부 (C/F/I열 기말재고 정제 완료)")
+            st.subheader("📋 표준 원재료 수불부 (수불부 투입량 & FIFO 매입일 매핑 반영)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns: df_preview = df_preview.drop(columns=["yymmdd"])
 
