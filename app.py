@@ -138,7 +138,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (디자인 개선 및 프릴 코드 반영)
+# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (투입량 빈칸 처리)
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target):
     try:
@@ -174,6 +174,7 @@ def render_process_log_html(date_str, df_target):
             prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
             check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
 
+            # [수정] 투입량(후) 열을 빈칸 <td></td> 으로 변경
             rows_html += f"""
             <tr>
                 {prod_cell}
@@ -183,7 +184,7 @@ def render_process_log_html(date_str, df_target):
                 {check_cell}
                 <td>{cut_spec}</td>
                 <td style="text-align:right;">{row.get("실투입량(전)", 0)} kg</td>
-                <td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>
+                <td></td>
                 <td></td>
             </tr>
             """
@@ -236,7 +237,6 @@ def render_process_log_html(date_str, df_target):
         </table>
 
         <table class="main-table">
-            <!-- [수정] 작성일자 셀과 시간 셀 분리 -->
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
                 <td colspan="3" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
