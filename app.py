@@ -138,7 +138,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (투입량 빈칸 처리)
+# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (투입량 빈칸 처리 및 셀 너비 조정)
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target):
     try:
@@ -174,7 +174,7 @@ def render_process_log_html(date_str, df_target):
             prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
             check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
 
-            # [수정] 투입량(후) 열을 빈칸 <td></td> 으로 변경
+            # 투입량(후) 열을 빈칸 <td></td> 으로 변경
             rows_html += f"""
             <tr>
                 {prod_cell}
@@ -237,23 +237,24 @@ def render_process_log_html(date_str, df_target):
         </table>
 
         <table class="main-table">
+            <!-- [수정] 작성일자/원료코드 셀 너비를 줄여서 '점검 항목' 셀 왼쪽 라인에 딱 맞게 정렬 (colspan 비율 조정) -->
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
-                <td colspan="3" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
-                <td colspan="2" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
+                <td colspan="2" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
+                <td colspan="3" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
                 <td>작성자</td>
                 <td style="background-color: #fff;"></td>
             </tr>
             <tr>
                 <td colspan="2" rowspan="2" class="bg-gray">원료코드<br>부여방법</td>
-                <td colspan="3" rowspan="2">원료 구분+입고일자 - 공급업체 구분</td>
-                <td colspan="4" style="text-align: left; font-size: 8pt; padding: 4px 8px;">
+                <td colspan="2" rowspan="2">원료 구분+입고일자 - 공급업체 구분</td>
+                <td colspan="5" style="text-align: left; font-size: 8pt; padding: 4px 8px;">
                     카이피라(C), 프릴아이스(F), 버터헤드(B), 레드오크(O), 로메인(R), 케일(K), 적근대(S)<br>
                     치커리(E), 적채(A), 양배추(D), 양상추(X)
                 </td>
             </tr>
             <tr>
-                <td colspan="4" style="text-align: left; font-size: 8pt; padding: 4px 8px; border-top:1px dashed #999;">
+                <td colspan="5" style="text-align: left; font-size: 8pt; padding: 4px 8px; border-top:1px dashed #999;">
                     공급업체 구분: 구름 (G01) , 에상스팜(H02), 승승장구(S01), 한스(K01)
                 </td>
             </tr>
@@ -695,7 +696,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
 
-            # [수정] 제품명 추출 및 치환 (공백, 콤마 제거 후 정밀 비교)
+            # 제품명 추출 및 치환
             raw_product_name = str(df_s.iloc[1, 1]).strip()
             normalized_name = raw_product_name.replace(" ", "").replace(",", "")
             
