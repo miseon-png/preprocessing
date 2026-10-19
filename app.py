@@ -138,7 +138,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (투입량 빈칸 처리 및 셀 너비 조정)
+# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (작성자 칸 위치 조정)
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target):
     try:
@@ -237,13 +237,13 @@ def render_process_log_html(date_str, df_target):
         </table>
 
         <table class="main-table">
-            <!-- [수정] 작성일자/원료코드 셀 너비를 줄여서 '점검 항목' 셀 왼쪽 라인에 딱 맞게 정렬 (colspan 비율 조정) -->
+            <!-- [수정] 작성자 칸을 '생산량(전)' 위치(col 7)로 이동시키기 위해 colspan 조정 -->
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
                 <td colspan="2" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
-                <td colspan="3" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
+                <td colspan="2" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
                 <td>작성자</td>
-                <td style="background-color: #fff;"></td>
+                <td colspan="2" style="background-color: #fff;"></td>
             </tr>
             <tr>
                 <td colspan="2" rowspan="2" class="bg-gray">원료코드<br>부여방법</td>
