@@ -80,7 +80,7 @@ def save_closed_lots(closed_ym, item_lots):
             if avail_val > 0:
                 cursor.execute(
                     "INSERT INTO closed_lots (item_name, yymmdd, avail_g, vendor, closed_ym) VALUES (?, ?, ?, ?, ?)",
-                    (item_name, lot["yymmdd"], avail_val, lot.get("vendor", "K1"), closed_ym)
+                    (item_name, lot["yymmdd"], avail_val, lot.get("vendor", "K01"), closed_ym)
                 )
     conn.commit()
     conn.close()
@@ -171,6 +171,7 @@ with col2:
     csv_file = st.file_uploader("2. 원료 매입 입고자료 / 수불부 (CSV/Excel) 업로드", type=["csv", "xlsx", "xls"])
 
 prefix_map = {"양상추": "X", "양배추": "D", "적채": "A", "프릴": "F", "프릴아이스": "F"}
+vendor_code_map = {"한스": "K01", "승승장구": "S01", "에상스팜": "H02", "넥스토팜": "N01"}
 
 # ---------------------------------------------------------
 # 날짜 정밀 정제 함수
@@ -184,7 +185,7 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
     
-    # 1. 26.0906 형태 (소수점 1개)
+    # 1. 26.0906 형태
     m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
     if m_dot_digit:
         yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
@@ -322,9 +323,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
-        if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
-        if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
+        if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K01"})
+        if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K01"})
+        if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K01"})
 
         def trace_usage(item_key, item_prefix, use_amount):
             if use_amount <= 0: return "-", "-"
@@ -340,13 +341,13 @@ def parse_and_convert_to_standard_ledger(excel_file):
                 lot["avail"] = avail_val - u
                 rem -= u
 
-                vendor = lot.get("vendor", "K1")
+                vendor = lot.get("vendor", "K01")
                 used_sources.append(f"{lot['label']}({round(u/1000.0, 1)}kg)")
                 used_codes.append(f"{item_prefix}{lot['yymmdd']}-{vendor}")
 
             if rem > 0:
                 used_sources.append(f"부족({round(rem/1000.0, 1)}kg)")
-                used_codes.append(f"{item_prefix}{yymmdd}-K1[부족]")
+                used_codes.append(f"{item_prefix}{yymmdd}-K01[부족]")
 
             return " / ".join(used_sources), " / ".join(list(dict.fromkeys(used_codes)))
 
@@ -472,7 +473,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
                 "yymmdd": q["yymmdd"],
                 "avail_g": assign_g,
                 "avail": assign_g,
-                "vendor": q.get("vendor", "K1")
+                "vendor": q.get("vendor", "K01")
             })
             rem_target -= assign_g
 
@@ -494,27 +495,31 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [매입자료 파일 유무에 따른 매입자료 기준 코드 정밀 처리]
+# [거래처 코드 맵핑 & 기타 제외 로직이 반영된 1번째 탭 리포트 생성]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
     df_csv = parse_csv_purchase(csv_file)
 
-    # 매입자료 CSV/Excel 업로드 여부 확인
     has_csv = not df_csv.empty
 
-    # 매입자료 파일이 업로드된 경우, 일자/품목별 실제 매입 입고 롯트 코드 맵 생성
-    purchase_lot_map = {}
+    # CSV 매입자료 파싱 리스트 구축
+    purchase_records = []
     if has_csv:
-        date_col = next((c for c in df_csv.columns if "일" in str(c) or "날짜" in str(c) or "일자" in str(c)), None)
-        item_col = next((c for c in df_csv.columns if "품" in str(c) or "원재료" in str(c) or "자재" in str(c)), None)
-        lot_col = next((c for c in df_csv.columns if "코드" in str(c) or "롯트" in str(c) or "LOT" in str(c).upper()), None)
+        date_col = next((c for c in df_csv.columns if "기간" in str(c) or "일자" in str(c) or "날짜" in str(c)), None)
+        item_col = next((c for c in df_csv.columns if "품명" in str(c) or "품목" in str(c) or "원재료" in str(c)), None)
+        vendor_col = next((c for c in df_csv.columns if "거래처" in str(c) or "매입처" in str(c) or "공급처" in str(c)), None)
 
         if date_col and item_col:
             for _, c_row in df_csv.iterrows():
                 p_date_raw = c_row[date_col]
                 p_item_raw = str(c_row[item_col]).strip()
+                p_vendor_raw = str(c_row[vendor_col]).strip() if vendor_col and pd.notna(c_row[vendor_col]) else ""
+
                 if pd.isna(p_date_raw) or not p_item_raw: continue
+                
+                # '기타' 거래처 제외 규칙 반영
+                if p_vendor_raw == "기타": continue
 
                 _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
                 p_std_dt = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
@@ -522,15 +527,20 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 if "양상추" in p_item_raw: p_item = "양상추"
                 elif "양배추" in p_item_raw: p_item = "양배추"
                 elif "적채" in p_item_raw: p_item = "적채"
+                elif "프릴" in p_item_raw: p_item = "프릴아이스"
                 else: p_item = p_item_raw
 
-                if lot_col and pd.notna(c_row[lot_col]):
-                    p_code = str(c_row[lot_col]).strip()
-                else:
-                    pref = prefix_map.get(p_item, "X")
-                    p_code = f"{pref}{p_yymmdd}-K1"
+                pref = prefix_map.get(p_item, prefix_map.get("프릴" if "프릴" in p_item else "양상추", "X"))
+                v_code = vendor_code_map.get(p_vendor_raw, "K01")
+                p_code = f"{pref}{p_yymmdd}-{v_code}"
 
-                purchase_lot_map[(p_std_dt, p_item)] = p_code
+                purchase_records.append({
+                    "std_date": p_std_dt,
+                    "yymmdd": p_yymmdd,
+                    "item": p_item,
+                    "code": p_code,
+                    "vendor": p_vendor_raw
+                })
 
     # 3번째 탭 원료코드 매핑 사전 구축
     code_summary_map = {}
@@ -598,29 +608,36 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         elif is_frill: lookup_item = "프릴아이스"
         else: lookup_item = raw_item.strip()
 
-        p = prefix_map.get(lookup_item, "X")
+        p = prefix_map.get(lookup_item, prefix_map.get("프릴" if is_frill else "양상추", "X"))
 
         if has_lot:
             _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
-            code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
+            code_worklog = f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        # 프릴계열 품목
+        # 수불부 기준 코드 (프릴은 수불부 대상 제외로 공란('-'))
         if is_frill:
             code_subul = "-"
-            code_purchase = "-"
-            is_match = "불일치(수불부 대상 제외 품목)"
         else:
-            # 3번째 탭 원료코드 연동
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
-            
-            # [수정 핵심] 매입자료 파일 업로드 여부에 따라 매입자료 기준 코드 결정
-            if has_csv:
-                code_purchase = purchase_lot_map.get((prod_date, lookup_item), "-")
-            else:
-                code_purchase = "-"
 
-            # 대조 및 일치여부 판단
+        # [매입자료 기준 코드] 생산일 이하 매입분 중 가장 최근 매입일자 & 거래처 코드 매칭
+        code_purchase = "-"
+        if has_csv:
+            valid_p = [pr for pr in purchase_records if pr["item"] == lookup_item and pr["std_date"] <= prod_date]
+            if valid_p:
+                valid_p.sort(key=lambda x: x["std_date"], reverse=True)
+                code_purchase = valid_p[0]["code"]
+
+        # 대조 및 일치 여부 판정
+        if is_frill:
+            if code_worklog != "없음" and code_purchase != "-" and (code_worklog in code_purchase or code_worklog.split("-")[0] in code_purchase):
+                is_match = "일치"
+            elif code_worklog == "없음":
+                is_match = "불일치(작업일지 미기재)"
+            else:
+                is_match = "불일치(수불부 대상 제외 품목)"
+        else:
             if code_worklog != "없음" and code_subul != "-" and code_worklog in code_subul:
                 is_match = "일치"
             elif code_worklog == "없음":
@@ -654,7 +671,7 @@ if excel_file is not None:
         with tab1:
             df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
             if not df_result.empty:
-                st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
+                st.success("✅ 소진 추적이 연동된 표준 수불부 및 매입자료 기반 원료코드 대조가 완료되었습니다!")
                 
                 col_d, col_p = st.columns([3, 1])
                 with col_d:
