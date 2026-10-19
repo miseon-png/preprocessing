@@ -54,7 +54,9 @@ def get_latest_closed_lots():
                 lots[item_name].append({
                     "yymmdd": yymmdd,
                     "avail_g": avail_g,
+                    "avail": avail_g,  # avail 키 추가 보장
                     "vendor": vendor,
+                    "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 이월",
                     "is_from_db": True
                 })
     conn.close()
@@ -68,10 +70,11 @@ def save_closed_lots(closed_ym, item_lots):
     
     for item_name, lot_list in item_lots.items():
         for lot in lot_list:
-            if lot["avail_g"] > 0:
+            avail_val = lot.get("avail", lot.get("avail_g", 0.0))
+            if avail_val > 0:
                 cursor.execute(
                     "INSERT INTO closed_lots (item_name, yymmdd, avail_g, vendor, closed_ym) VALUES (?, ?, ?, ?, ?)",
-                    (item_name, lot["yymmdd"], lot["avail_g"], lot.get("vendor", "K1"), closed_ym)
+                    (item_name, lot["yymmdd"], avail_val, lot.get("vendor", "K1"), closed_ym)
                 )
     conn.commit()
     conn.close()
@@ -236,10 +239,7 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# [완벽 수정] openpyxl로 A~J열 (0~9 인덱스) 데이터 직접 파싱
-# A(0):날짜 | B(1):양상추매입 | C(2):양상추기말 | D(3):양상추투입
-# E(4):양배추매입 | F(5):양배추기말 | G(6):양배추투입
-# H(7):적채매입   | I(8):적채기말   | J(9):적채투입
+# [오류 수정 완료] 'avail' 키 예외 없는 FIFO 수불부 연동 파싱
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
@@ -284,7 +284,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
             "j_in": j_in, "j_use": j_use, "j_stk": j_stk
         })
 
-    # 동일 날짜 행 통합 (합산)
     grouped_by_date = {}
     date_order = []
 
@@ -311,13 +310,21 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
         if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
 
-    # FIFO 소진 큐 생성 (DB 매입 연동)
+    # FIFO 소진 큐 생성 및 'avail' 키 보장
     _, db_lots = get_latest_closed_lots()
     item_queues = {
         "yangsangchu": copy.deepcopy(db_lots["양상추"]),
         "yangbaechu": copy.deepcopy(db_lots["양배추"]),
         "jeokchae": copy.deepcopy(db_lots["적채"])
     }
+
+    # 큐 내 항목 'avail' 속성 안전 처리
+    for k in item_queues:
+        for q in item_queues[k]:
+            if "avail" not in q:
+                q["avail"] = q.get("avail_g", 0.0)
+            if "label" not in q:
+                q["label"] = f"{q['yymmdd'][2:4]}/{q['yymmdd'][4:]} 이월"
 
     data_rows = []
     generated_code_rows = []
@@ -339,9 +346,12 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
             for lot in item_queues[item_key]:
                 if rem <= 0: break
-                if lot["avail"] <= 0: continue
-                u = min(lot["avail"], rem)
-                lot["avail"] -= u
+                avail_val = lot.get("avail", lot.get("avail_g", 0.0))
+                if avail_val <= 0: continue
+                
+                u = min(avail_val, rem)
+                lot["avail"] = avail_val - u
+                lot["avail_g"] = lot["avail"]
                 rem -= u
 
                 vendor = lot.get("vendor", "K1")
@@ -381,7 +391,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
                     "투입량(kg)": round(u_val / 1000.0, 1), "준비량(kg)": 0.0, "소진매입일(상세)": src_map.get(item_name, "-"), "비고": note
                 })
 
-    # --- openpyxl 엑셀 생성 ---
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "원재료 수불부"
@@ -446,9 +455,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
     wb.save(buffer)
 
     final_remaining_lots = {
-        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q["avail"] > 0],
-        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q["avail"] > 0],
-        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q["avail"] > 0]
+        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q.get("avail", q.get("avail_g", 0.0)) > 0],
+        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q.get("avail", q.get("avail_g", 0.0)) > 0],
+        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q.get("avail", q.get("avail_g", 0.0)) > 0]
     }
 
     return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet, final_remaining_lots
@@ -574,7 +583,7 @@ if excel_file is not None:
 
         # --- Tab 2: 표준 원재료 수불부 ---
         with tab2:
-            st.subheader("📋 표준 원재료 수불부 (A~J열 투입량/기말재고 정확 파싱)")
+            st.subheader("📋 표준 원재료 수불부 (A~J열 정밀 파싱 완료)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
