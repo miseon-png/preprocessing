@@ -16,64 +16,6 @@ st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", 
 
 DB_FILE = "stock_master.db"
 
-# ---------------------------------------------------------
-# 표준 엑셀 양식 샘플 생성 함수
-# ---------------------------------------------------------
-def generate_sample_excel_template():
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "원재료 매입 및 수불"
-    ws.views.sheetView[0].showGridLines = True
-
-    headers = [
-        "날짜", 
-        "양상추매입", "양상추", "양상추 투입", 
-        "양배추매입", "양배추", "양배추 투입", 
-        "적채매입", "적채", "적채투입"
-    ]
-    
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_font = Font(name="맑은 고딕", size=11, bold=True, color="FFFFFF")
-    thin_border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
-                         top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
-
-    ws.append(headers)
-    ws.row_dimensions[1].height = 25
-
-    for col_idx in range(1, 11):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    sample_data = [
-        ["2026-09-04", 800000, None, None, 200000, None, None, 100000, None, None],
-        ["2026-09-05", None, None, None, None, None, None, None, None, None],
-        ["2026-09-06", None, 698000, 102000, None, 170000, 30000, None, 87000, 13000],
-        ["2026-09-07", None, 568000, 130000, None, 125000, 45000, None, 62000, 25000],
-    ]
-
-    for r_data in sample_data:
-        ws.append(r_data)
-
-    for row in ws.iter_rows(min_row=2, max_row=len(sample_data)+1, min_col=1, max_col=10):
-        for cell in row:
-            cell.font = Font(name="맑은 고딕", size=10)
-            cell.border = thin_border
-            if cell.column == 1:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-            else:
-                cell.number_format = "#,##0"
-                cell.alignment = Alignment(horizontal="right", vertical="center")
-
-    ws.column_dimensions["A"].width = 14
-    for c_let in ["B", "C", "D", "E", "F", "G", "H", "I", "J"]:
-        ws.column_dimensions[c_let].width = 15
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
-
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -132,7 +74,7 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# UI 및 인쇄 스타일 설정
+# UI 및 스타일 설정
 # ---------------------------------------------------------
 st.markdown("""
     <style>
@@ -161,20 +103,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
-
-st.subheader("📁 입력 파일 업로드 및 양식 다운로드")
-col_down, col_blank = st.columns([1, 3])
-with col_down:
-    template_bytes = generate_sample_excel_template()
-    st.download_button(
-        label="📄 [양식 다운로드] 표준 생산일지/수불부 엑셀 서식",
-        data=template_bytes,
-        file_name="표준_원재료_수불부_입력양식.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-st.markdown("---")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -238,16 +166,18 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# [수정 완료] 수불부 엑셀 D, G, J열 투입량 100% 반영 & FIFO 소진 매입일 정확 매핑
+# [핵심 수정] 엑셀 열 인덱스(0~9) 정밀 파싱 로직
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
     stock_sheet = find_stock_sheet_name(xls)
-    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=0)
+    # header=None으로 읽어 첫 번째 헤더 행 오염 방지
+    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
-    def parse_cell(val):
+    def parse_num(val):
         if pd.isna(val): return 0.0
         try:
+            # 숫식 및 콤마 제거 후 순수 float 변환
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
         except Exception: return 0.0
@@ -255,24 +185,31 @@ def parse_and_convert_to_standard_ledger(excel_file):
     grouped_by_date = {}
 
     for idx, row in df_raw.iterrows():
+        if len(row) == 0: continue
         raw_date = row.iloc[0]
+        
+        # 헤더 문구 스킵
         if pd.isna(raw_date) or str(raw_date).strip() == "" or "날짜" in str(raw_date):
             continue
 
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_in  = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0  # B: 양상추매입
-        y_stk = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0  # C: 양상추(기말재고)
-        y_use = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0  # D: 양상추 투입
+        # 엑셀 열 인덱스 타겟팅
+        # A(0):날짜 | B(1):양상추매입 | C(2):양상추기말재고 | D(3):양상추투입
+        # E(4):양배추매입 | F(5):양배추기말재고 | G(6):양배추투입
+        # H(7):적채매입   | I(8):적채기말재고   | J(9):적채투입
+        y_in  = parse_num(row.iloc[1]) if len(row) > 1 else 0.0
+        y_stk = parse_num(row.iloc[2]) if len(row) > 2 else 0.0
+        y_use = parse_num(row.iloc[3]) if len(row) > 3 else 0.0
 
-        b_in  = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0  # E: 양배추매입
-        b_stk = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0  # F: 양배추(기말재고)
-        b_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0  # G: 양배추 투입
+        b_in  = parse_num(row.iloc[4]) if len(row) > 4 else 0.0
+        b_stk = parse_num(row.iloc[5]) if len(row) > 5 else 0.0
+        b_use = parse_num(row.iloc[6]) if len(row) > 6 else 0.0
 
-        j_in  = parse_cell(row.iloc[7]) if len(row) > 7 else 0.0  # H: 적채매입
-        j_stk = parse_cell(row.iloc[8]) if len(row) > 8 else 0.0  # I: 적채(기말재고)
-        j_use = parse_cell(row.iloc[9]) if len(row) > 9 else 0.0  # J: 적채 투입
+        j_in  = parse_num(row.iloc[7]) if len(row) > 7 else 0.0
+        j_stk = parse_num(row.iloc[8]) if len(row) > 8 else 0.0
+        j_use = parse_num(row.iloc[9]) if len(row) > 9 else 0.0
 
         if formatted_date not in grouped_by_date:
             grouped_by_date[formatted_date] = {
@@ -286,6 +223,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         grouped_by_date[formatted_date]["b_in"] += b_in
         grouped_by_date[formatted_date]["j_in"] += j_in
 
+        # 정확한 투입량 합산
         grouped_by_date[formatted_date]["y_use"] += y_use
         grouped_by_date[formatted_date]["b_use"] += b_use
         grouped_by_date[formatted_date]["j_use"] += j_use
@@ -294,7 +232,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if b_stk > 0: grouped_by_date[formatted_date]["b_stk"] = b_stk
         if j_stk > 0: grouped_by_date[formatted_date]["j_stk"] = j_stk
 
-    # --- FIFO 큐 구성 ---
+    # --- FIFO 소진 큐 생성 ---
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
     sorted_dates = sorted(grouped_by_date.keys())
 
@@ -307,7 +245,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        # 당일 매입 롯트 우선 추가
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
@@ -434,7 +371,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
     return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet, final_remaining_lots
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성 (Tab 1, Tab 2, Tab 3)
+# Streamlit 화면 구성
 # ---------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["📊 표준 원재료 수불부 정리", "🏷️ 원료코드 생성 목록", "🔒 당월 수불 마감 확정"])
 
@@ -443,7 +380,7 @@ if excel_file is not None:
         excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
 
         with tab1:
-            st.subheader("📋 표준 원재료 수불부 (수불부 투입량 & FIFO 매입일 매핑 반영)")
+            st.subheader("📋 표준 원재료 수불부 (엑셀 투입량 데이터 100% 반영)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns: df_preview = df_preview.drop(columns=["yymmdd"])
 
