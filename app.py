@@ -88,7 +88,7 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# 프린터 전용 직접 인쇄 HTML 생성 함수 (기본 표 출력용)
+# 프린터 전용 직접 인쇄 HTML 생성 함수 (기본 표 출력용 팝업)
 # ---------------------------------------------------------
 def render_printable_document(title, df_data):
     html_table = df_data.to_html(index=False, classes="report-table")
@@ -97,6 +97,7 @@ def render_printable_document(title, df_data):
     <html>
     <head>
     <meta charset="utf-8">
+    <title>{title}</title>
     <style>
         body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; }}
         .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }}
@@ -113,17 +114,33 @@ def render_printable_document(title, df_data):
         .report-table tr:nth-child(even) {{ background-color: #F9FAFB; }}
         
         .print-btn {{
-            background-color: #1F4E79; color: white; padding: 8px 16px; border: none;
-            border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px;
+            background-color: #1F4E79; color: white; padding: 10px 20px; border: none;
+            border-radius: 4px; font-weight: bold; font-size: 11pt; cursor: pointer; margin-bottom: 15px;
         }}
         @media print {{
             .print-btn {{ display: none !important; }}
-            body {{ padding: 0; }}
+            body {{ padding: 0; margin: 0; }}
+            @page {{ size: A4 portrait; margin: 15mm; }}
         }}
     </style>
+    <script>
+        function openPrintPopup() {{
+            var win = window.open('', '_blank', 'width=1000,height=800');
+            win.document.write('<html><head><title>인쇄/PDF 저장</title>');
+            win.document.write(document.head.innerHTML);
+            win.document.write('</head><body>');
+            win.document.write(document.body.innerHTML);
+            win.document.write('</body></html>');
+            win.document.close();
+            win.focus();
+            setTimeout(function() {{
+                win.print();
+            }}, 500);
+        }}
+    </script>
     </head>
     <body>
-        <button class="print-btn" onclick="window.print()">🖨️ 이 문서 프린터로 바로 출력하기</button>
+        <button class="print-btn" onclick="openPrintPopup()">🖨️ 출력 / PDF 저장 (새 창에서 여백 조정)</button>
         <div class="header-container">
             <h1 class="report-title">{title}</h1>
             <table class="approval-table">
@@ -138,7 +155,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (작성자 칸 위치 조정)
+# 전처리 공정일지 전용 HTML 렌더링 함수 (팝업 인쇄 및 가로 방향 적용)
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target):
     try:
@@ -156,7 +173,7 @@ def render_process_log_html(date_str, df_target):
         for i, row in enumerate(df_target.to_dict('records')):
             item = row.get("품목", "")
             
-            # 1. 절단 규격 분류
+            # 절단 규격 분류
             if "양상추" in item or "프릴" in item:
                 cut_spec = "절단 4X4cm"
             elif "양배추" in item or "적채" in item:
@@ -164,13 +181,13 @@ def render_process_log_html(date_str, df_target):
             else:
                 cut_spec = ""
 
-            # 2. 원료코드 분류 (프릴은 매입자료 기준코드 사용)
+            # 원료코드 분류 (프릴은 매입자료 기준코드 사용)
             if "프릴" in item:
                 display_code = row.get("매입자료 기준 코드", "-")
             else:
                 display_code = row.get("수불부 기준 코드", "-")
 
-            # 3. 셀 병합(rowspan) 처리
+            # 셀 병합(rowspan) 처리
             prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
             check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
 
@@ -198,15 +215,18 @@ def render_process_log_html(date_str, df_target):
     <html>
     <head>
     <meta charset="utf-8">
+    <title>전처리 공정일지</title>
     <style>
-        body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; }}
+        body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; margin: 0 auto; max-width: 1200px; }}
         .print-btn {{
-            background-color: #1F4E79; color: white; padding: 8px 16px; border: none;
-            border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px;
+            background-color: #1F4E79; color: white; padding: 10px 20px; border: none;
+            border-radius: 4px; font-weight: bold; font-size: 11pt; cursor: pointer; margin-bottom: 15px;
         }}
         @media print {{
             .print-btn {{ display: none !important; }}
-            body {{ padding: 0; }}
+            body {{ padding: 0; margin: 0; max-width: none; }}
+            /* 공정일지는 가로(landscape) 방향으로 설정하여 잘림 방지 */
+            @page {{ size: A4 landscape; margin: 15mm; }}
         }}
         .header-table {{ width: 100%; margin-bottom: 10px; }}
         .header-table td {{ vertical-align: top; }}
@@ -220,9 +240,24 @@ def render_process_log_html(date_str, df_target):
         .main-table th, .main-table td {{ border: 1px solid #000; padding: 6px; }}
         .bg-gray {{ background-color: #f2f2f2; font-weight: bold; }}
     </style>
+    <script>
+        function openPrintPopup() {{
+            var win = window.open('', '_blank', 'width=1200,height=800');
+            win.document.write('<html><head><title>인쇄/PDF 저장</title>');
+            win.document.write(document.head.innerHTML);
+            win.document.write('</head><body>');
+            win.document.write(document.body.innerHTML);
+            win.document.write('</body></html>');
+            win.document.close();
+            win.focus();
+            setTimeout(function() {{
+                win.print();
+            }}, 500);
+        }}
+    </script>
     </head>
     <body>
-        <button class="print-btn" onclick="window.print()">🖨️ 이 문서 프린터로 바로 출력하기</button>
+        <button class="print-btn" onclick="openPrintPopup()">🖨️ 출력 / PDF 저장 (새 창에서 여백 및 방향 조정)</button>
         
         <table class="header-table">
             <tr>
@@ -237,7 +272,6 @@ def render_process_log_html(date_str, df_target):
         </table>
 
         <table class="main-table">
-            <!-- [수정] 작성자 칸을 '생산량(전)' 위치(col 7)로 이동시키기 위해 colspan 조정 -->
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
                 <td colspan="2" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
@@ -822,10 +856,10 @@ if excel_file is not None:
                         df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
                     st.download_button("📥 엑셀 다운로드 (.xlsx)", data=buffer.getvalue(), file_name="원료코드_대조표.xlsx", use_container_width=True)
                 with col_p:
-                    show_print1 = st.button("🖨️ 보고서 직접 출력", key="btn_print1", use_container_width=True)
+                    show_print1 = st.button("🖨️ 출력 / PDF 화면 열기", key="btn_print1", use_container_width=True)
 
                 if show_print1:
-                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 문서가 출력됩니다.")
+                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 출력 / PDF 저장] 버튼을 누르면 팝업에서 깨끗하게 인쇄됩니다.")
                     html_content = render_printable_document("샐러드 생산일보 원료코드 대조표 (단위: kg)", df_result)
                     components.html(html_content, height=600, scrolling=True)
                 else:
@@ -860,10 +894,10 @@ if excel_file is not None:
             with col_d2:
                 st.download_button("📥 엑셀 다운로드 (.xlsx)", data=excel_bytes, file_name="표준_원재료_수불부(kg).xlsx", use_container_width=True)
             with col_p2:
-                show_print2 = st.button("🖨️ 수불부 직접 출력", key="btn_print2", use_container_width=True)
+                show_print2 = st.button("🖨️ 출력 / PDF 화면 열기", key="btn_print2", use_container_width=True)
 
             if show_print2:
-                st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 수불부가 출력됩니다.")
+                st.info("💡 아래 출력 미리보기 화면의 [🖨️ 출력 / PDF 저장] 버튼을 누르면 팝업에서 깨끗하게 인쇄됩니다.")
                 html_content = render_printable_document("표준 원재료 수불부 (단위: kg)", df_preview)
                 components.html(html_content, height=600, scrolling=True)
             else:
@@ -888,10 +922,10 @@ if excel_file is not None:
                         df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
                     st.download_button("📥 엑셀 다운로드 (.xlsx)", data=code_buffer.getvalue(), file_name="일자별_생성_원료코드_목록.xlsx", use_container_width=True)
                 with col_p3:
-                    show_print3 = st.button("🖨️ 원료코드표 직접 출력", key="btn_print3", use_container_width=True)
+                    show_print3 = st.button("🖨️ 출력 / PDF 화면 열기", key="btn_print3", use_container_width=True)
 
                 if show_print3:
-                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 눌러 인쇄하세요.")
+                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 출력 / PDF 저장] 버튼을 눌러 인쇄하세요.")
                     html_content = render_printable_document("일자별 생성 원료코드 목록", df_code_summary)
                     components.html(html_content, height=600, scrolling=True)
                 else:
@@ -928,7 +962,7 @@ if excel_file is not None:
                 
                 df_target = df_result[df_result["생산일자"] == selected_date]
                 
-                st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 A4에 맞게 인쇄됩니다.")
+                st.info("💡 아래 [🖨️ 출력 / PDF 저장] 버튼을 누르면 여백과 가로 방향이 최적화된 새 창에서 인쇄됩니다.")
                 
                 html_process_log = render_process_log_html(selected_date, df_target)
                 components.html(html_process_log, height=800, scrolling=True)
