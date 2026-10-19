@@ -11,13 +11,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", layout="wide")
 
 DB_FILE = "stock_master.db"
 
 # ---------------------------------------------------------
-# DB 관리 함수 (초기화 기능 추가)
+# DB 관리 함수
 # ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -36,7 +37,6 @@ def init_db():
     conn.close()
 
 def clear_db():
-    """DB를 완전히 초기화하여 과거 이월 롯트를 제거합니다."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM closed_lots")
@@ -88,39 +88,62 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# UI 및 브라우저 바로 인쇄(@media print) 스타일 설정
+# 프린터 전용 직접 인쇄 HTML 생성 함수 (결재란 포함)
 # ---------------------------------------------------------
-st.markdown("""
+def render_printable_document(title, df_data):
+    html_table = df_data.to_html(index=False, classes="report-table")
+    
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
     <style>
-    @media print {
-        header, footer, .stFileUploader, button, iframe, [data-testid="stHeader"], .stAlert, .no-print, [data-testid="stToolbar"], .stTabs [role="tablist"] {
-            display: none !important;
-        }
-        [data-testid="stDataFrame"] { display: none !important; }
-        html, body, .main, .block-container, div, span, td, th {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-        }
-        .print-table-container { display: block !important; width: 100% !important; }
-        .print-table {
-            width: 100%; border-collapse: collapse; font-size: 10px;
-            background-color: #ffffff !important; color: #000000 !important;
-            margin-bottom: 20px;
-        }
-        .print-table th, .print-table td {
-            border: 1px solid #333333 !important; padding: 5px 4px;
-            text-align: center; white-space: nowrap;
-        }
-        .print-table th { background-color: #f2f2f2 !important; font-weight: bold; }
-    }
-    .print-table-container { display: none; }
+        body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; }}
+        .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }}
+        .report-title {{ font-size: 20pt; font-weight: bold; color: #1F4E79; margin: 0; }}
+        
+        /* 결재란 서식 */
+        .approval-table {{ border-collapse: collapse; text-align: center; font-size: 9pt; }}
+        .approval-table th, .approval-table td {{ border: 1px solid #333; padding: 4px 8px; }}
+        .approval-table th {{ background-color: #f2f2f2; width: 50px; }}
+        .approval-table td {{ height: 40px; width: 60px; }}
+        
+        /* 본문 데이터 테이블 서식 */
+        .report-table {{ width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 10px; }}
+        .report-table th, .report-table td {{ border: 1px solid #333; padding: 6px 4px; text-align: center; }}
+        .report-table th {{ background-color: #D9E1F2; font-weight: bold; color: #1F4E79; }}
+        .report-table tr:nth-child(even) {{ background-color: #F9FAFB; }}
+        
+        .print-btn {{
+            background-color: #1F4E79; color: white; padding: 8px 16px; border: none;
+            border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px;
+        }}
+        @media print {{
+            .print-btn {{ display: none !important; }}
+            body {{ padding: 0; }}
+        }}
     </style>
-""", unsafe_allow_html=True)
+    </head>
+    <body>
+        <button class="print-btn" onclick="window.print()">🖨️ 이 문서 프린터로 바로 출력하기</button>
+        <div class="header-container">
+            <h1 class="report-title">{title}</h1>
+            <table class="approval-table">
+                <tr><th rowspan="2">결<br>재</th><th>담당</th><th>검토</th><th>승인</th></tr>
+                <tr><td></td><td></td><td></td></tr>
+            </table>
+        </div>
+        {html_table}
+    </body>
+    </html>
+    """
+    return full_html
 
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
 
 # ---------------------------------------------------------
-# 사이드바: 전월 마감 DB 관리 및 리셋
+# 사이드바
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("🗄️ 마스터 수불 DB 관리")
@@ -204,9 +227,6 @@ def find_stock_sheet_name(xls):
             continue
     return xls.sheet_names[0]
 
-# ---------------------------------------------------------
-# 수불부 A~J열 매핑 및 FIFO 연동 처리
-# ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
     stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
@@ -515,28 +535,26 @@ if excel_file is not None:
             df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             if not df_result.empty:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
-                st.dataframe(df_result, use_container_width=True)
+                
+                col_d, col_p = st.columns([3, 1])
+                with col_d:
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                        df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
+                    st.download_button("📥 엑셀 다운로드 (.xlsx)", data=buffer.getvalue(), file_name="원료코드_대조표.xlsx", use_container_width=True)
+                with col_p:
+                    show_print1 = st.button("🖨️ 보고서 직접 출력", key="btn_print1", use_container_width=True)
 
-                # 바로 인쇄용 HTML 파트
-                html_table1 = df_result.to_html(classes="print-table", index=False)
-                st.markdown(f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table1}</div>', unsafe_allow_html=True)
-
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
-
-                st.download_button(
-                    label="📥 원료코드 대조표 다운로드 (.xlsx)",
-                    data=buffer.getvalue(),
-                    file_name="원료코드_비교_정리표.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-                st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
+                if show_print1:
+                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 문서가 출력됩니다.")
+                    html_content = render_printable_document("샐러드 생산일보 원료코드 대조표", df_result)
+                    components.html(html_content, height=600, scrolling=True)
+                else:
+                    st.dataframe(df_result, use_container_width=True)
 
         # --- Tab 2: 표준 원재료 수불부 ---
         with tab2:
-            st.subheader("📋 표준 원재료 수불부 (소진 매입일 9/4 우선 연동 완료)")
+            st.subheader("📋 표준 원재료 수불부")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
@@ -559,24 +577,22 @@ if excel_file is not None:
             }
             df_preview = df_preview.rename(columns=korean_column_map)
 
-            st.dataframe(df_preview, use_container_width=True)
+            col_d2, col_p2 = st.columns([3, 1])
+            with col_d2:
+                st.download_button("📥 엑셀 다운로드 (.xlsx)", data=excel_bytes, file_name="표준_원재료_수불부.xlsx", use_container_width=True)
+            with col_p2:
+                show_print2 = st.button("🖨️ 수불부 직접 출력", key="btn_print2", use_container_width=True)
 
-            # 바로 인쇄용 HTML 파트 (Tab 2 전용)
-            html_table2 = df_preview.to_html(classes="print-table", index=False)
-            st.markdown(f'<div class="print-table-container"><h2>📊 표준 원재료 수불부</h2>{html_table2}</div>', unsafe_allow_html=True)
-
-            st.download_button(
-                label="📥 정리된 표준 원재료 수불부 엑셀 다운로드 (.xlsx)",
-                data=excel_bytes,
-                file_name="표준_원재료_수불부(소진추적포함).xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-            st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
+            if show_print2:
+                st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 수불부가 출력됩니다.")
+                html_content = render_printable_document("표준 원재료 수불부 (소진 추적 포함)", df_preview)
+                components.html(html_content, height=600, scrolling=True)
+            else:
+                st.dataframe(df_preview, use_container_width=True)
 
         # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
-            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
+            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 목록")
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
                 column_order = ["날짜", "원재료", "생성코드", "투입량(kg)", "준비량(kg)", "소진매입일(상세)", "비고"]
@@ -586,24 +602,21 @@ if excel_file is not None:
                 df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
                 df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
 
-                st.dataframe(df_code_summary, use_container_width=True)
+                col_d3, col_p3 = st.columns([3, 1])
+                with col_d3:
+                    code_buffer = io.BytesIO()
+                    with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
+                        df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
+                    st.download_button("📥 엑셀 다운로드 (.xlsx)", data=code_buffer.getvalue(), file_name="일자별_생성_원료코드_목록.xlsx", use_container_width=True)
+                with col_p3:
+                    show_print3 = st.button("🖨️ 원료코드표 직접 출력", key="btn_print3", use_container_width=True)
 
-                # 바로 인쇄용 HTML 파트 (Tab 3 전용)
-                html_table3 = df_code_summary.to_html(classes="print-table", index=False)
-                st.markdown(f'<div class="print-table-container"><h2>🏷️ 일자별 생성 원료코드 목록</h2>{html_table3}</div>', unsafe_allow_html=True)
-
-                code_buffer = io.BytesIO()
-                with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
-                    df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
-
-                st.download_button(
-                    label="📥 일자별 생성 원료코드 정리표 다운로드 (.xlsx)",
-                    data=code_buffer.getvalue(),
-                    file_name="일자별_생성_원료코드_목록.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-                st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
+                if show_print3:
+                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 눌러 인쇄하세요.")
+                    html_content = render_printable_document("일자별 생성 원료코드 목록", df_code_summary)
+                    components.html(html_content, height=600, scrolling=True)
+                else:
+                    st.dataframe(df_code_summary, use_container_width=True)
 
         # --- Tab 4: 당월 수불 마감 확정 ---
         with tab4:
