@@ -496,7 +496,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [1번째 탭 - 요약 시트 제외 및 준비량/투입량 셀 위치 교정]
+# [1번째 탭 - 표 상단 단위 표기 추가]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -549,7 +549,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         c_code = r.get("생성코드", "-")
         code_summary_map[(std_dt, item)] = c_code
 
-    # [수정] 월 요약 시트('26.09' 등) 완벽 제외
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [
         s for s in xls.sheet_names 
@@ -566,14 +565,9 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
 
-            # [셀 위치 교정]
-            # 품목: 1행 4, 7, 10, 13열
             items = [df_s.iloc[1, 4], df_s.iloc[1, 7], df_s.iloc[1, 10], df_s.iloc[1, 13]]
-            # 롯트: 2행 5, 8, 11, 14열
             lots = [df_s.iloc[2, 5], df_s.iloc[2, 8], df_s.iloc[2, 11], df_s.iloc[2, 14]]
-            # 준비량(내포장 준비 g 수량): 3행 4, 7, 10, 13열
             prep_pck = [df_s.iloc[3, 4], df_s.iloc[3, 7], df_s.iloc[3, 10], df_s.iloc[3, 13]]
-            # 실투입량: 5행 4, 7, 10, 13열
             actual_input = [df_s.iloc[5, 4], df_s.iloc[5, 7], df_s.iloc[5, 10], df_s.iloc[5, 13]]
 
             for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
@@ -593,7 +587,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 records.append({
                     "생산일자": formatted_prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
-                    "실투입 양 (kg)": round(a_val / 1000.0, 1), "준비 양 (kg)": round(p_val / 1000.0, 1),
+                    "실투입량(전)": round(a_val / 1000.0, 1), "준비양(후)": round(p_val / 1000.0, 1),
                     "has_lot": has_lot,
                 })
         except Exception: continue
@@ -621,13 +615,11 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             code_worklog = f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        # 수불부 기준 코드
         if is_frill:
             code_subul = "-"
         else:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
-        # 매입자료 기준 코드
         code_purchase = "-"
         if has_csv:
             valid_p = [pr for pr in purchase_records if pr["item"] == lookup_item and pr["std_date"] <= prod_date]
@@ -635,7 +627,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 valid_p.sort(key=lambda x: x["std_date"], reverse=True)
                 code_purchase = valid_p[0]["code"]
 
-        # 대조 및 일치 여부 판정
         if is_frill:
             if code_worklog != "없음" and code_purchase != "-" and (code_worklog in code_purchase or code_worklog.split("-")[0] in code_purchase):
                 is_match = "일치"
@@ -657,7 +648,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         final_rows.append(rec)
 
     df_report = pd.DataFrame(final_rows)
-    return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
+    return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
 
 # ---------------------------------------------------------
 # Streamlit 화면 구성 (4개 탭)
@@ -679,6 +670,9 @@ if excel_file is not None:
             if not df_result.empty:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 및 매입자료 기반 원료코드 대조가 완료되었습니다!")
                 
+                # 표 맨 위 상단 단위 안내 표시
+                st.markdown("##### 📌 (단위: kg)")
+                
                 col_d, col_p = st.columns([3, 1])
                 with col_d:
                     buffer = io.BytesIO()
@@ -690,7 +684,7 @@ if excel_file is not None:
 
                 if show_print1:
                     st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 문서가 출력됩니다.")
-                    html_content = render_printable_document("샐러드 생산일보 원료코드 대조표", df_result)
+                    html_content = render_printable_document("샐러드 생산일보 원료코드 대조표 (단위: kg)", df_result)
                     components.html(html_content, height=600, scrolling=True)
                 else:
                     st.dataframe(df_result, use_container_width=True)
