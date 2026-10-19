@@ -1,3 +1,8 @@
+네, 말씀하신 내용(B2 셀의 "샐러드 믹스 1000"을 "브런치빈 샐러드믹스"로 치환하는 로직)과 보여주신 **전처리 공정일지 양식**을 모두 반영하여 **전체 코드**를 새롭게 작성했습니다.
+
+바로 복사해서 실행하시면 됩니다! 5번째 탭(`📋 전처리 공정일지 출력`)에서 날짜를 선택하면, 요청하신 양식 그대로 자동 생성되어 바로 인쇄하실 수 있습니다.
+
+```python
 import base64
 import copy
 import io
@@ -88,11 +93,10 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# 프린터 전용 직접 인쇄 HTML 생성 함수
+# 프린터 전용 직접 인쇄 HTML 생성 함수 (기본 표 출력용)
 # ---------------------------------------------------------
 def render_printable_document(title, df_data):
     html_table = df_data.to_html(index=False, classes="report-table")
-    
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -137,6 +141,138 @@ def render_printable_document(title, df_data):
     </html>
     """
     return full_html
+
+# ---------------------------------------------------------
+# [신규 추가] 전처리 공정일지 전용 HTML 렌더링 함수
+# ---------------------------------------------------------
+def render_process_log_html(date_str, df_target):
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        yyyy, mm, dd = dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
+    except:
+        yyyy, mm, dd = "202 ", "  ", "  "
+    
+    row_count = len(df_target)
+    rows_html = ""
+    
+    if row_count == 0:
+        rows_html = "<tr><td colspan='9' style='text-align:center; padding:15px;'>해당 일자의 데이터가 없습니다.</td></tr>"
+    else:
+        for i, row in enumerate(df_target.to_dict('records')):
+            item = row.get("품목", "")
+            # 절단 규격 분류
+            if "양상추" in item or "프릴" in item:
+                cut_spec = "절단 4X4cm"
+            elif "양배추" in item or "적채" in item:
+                cut_spec = "슬라이스 4mm"
+            else:
+                cut_spec = ""
+
+            # 셀 병합(rowspan) 처리
+            prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
+            check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
+
+            rows_html += f"""
+            <tr>
+                {prod_cell}
+                <td>{item}</td>
+                <td>{row.get("수불부 기준 코드", "-")}</td>
+                <td>적 / 부</td>
+                {check_cell}
+                <td>{cut_spec}</td>
+                <td style="text-align:right;">{row.get("실투입량(전)", 0)} kg</td>
+                <td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>
+                <td></td>
+            </tr>
+            """
+    
+    # 남은 여백 줄 추가 (서식 통일용)
+    for _ in range(5):
+        rows_html += "<tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+        body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; }}
+        .print-btn {{
+            background-color: #1F4E79; color: white; padding: 8px 16px; border: none;
+            border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px;
+        }}
+        @media print {{
+            .print-btn {{ display: none !important; }}
+            body {{ padding: 0; }}
+        }}
+        .header-table {{ width: 100%; margin-bottom: 10px; }}
+        .header-table td {{ vertical-align: top; }}
+        .title {{ font-size: 26pt; font-weight: bold; letter-spacing: 2px; }}
+        .approval-table {{ border-collapse: collapse; text-align: center; font-size: 10pt; float: right; margin-bottom: 5px; }}
+        .approval-table th, .approval-table td {{ border: 1px solid #000; padding: 4px 8px; }}
+        .approval-table th {{ width: 50px; font-weight: normal; }}
+        .approval-table td {{ height: 40px; width: 60px; }}
+        
+        .main-table {{ width: 100%; border-collapse: collapse; font-size: 9pt; border: 1px solid #000; text-align: center; }}
+        .main-table th, .main-table td {{ border: 1px solid #000; padding: 6px; }}
+        .bg-gray {{ background-color: #f2f2f2; font-weight: bold; }}
+    </style>
+    </head>
+    <body>
+        <button class="print-btn" onclick="window.print()">🖨️ 이 문서 프린터로 바로 출력하기</button>
+        
+        <table class="header-table">
+            <tr>
+                <td class="title">전처리 공정일지</td>
+                <td>
+                    <table class="approval-table">
+                        <tr><th rowspan="2">결<br>재</th><th>작 성</th><th>검 토</th><th>승 인</th></tr>
+                        <tr><td></td><td></td><td></td></tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+
+        <table class="main-table">
+            <tr class="bg-gray">
+                <td colspan="2">작성일자</td>
+                <td colspan="4" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp; :</td>
+                <td>작성자</td>
+                <td colspan="2" style="background-color: #fff;"></td>
+            </tr>
+            <tr>
+                <td colspan="2" rowspan="2" class="bg-gray">원료코드<br>부여방법</td>
+                <td colspan="3" rowspan="2">원료 구분+입고일자 - 공급업체 구분</td>
+                <td colspan="4" style="text-align: left; font-size: 8pt; padding: 4px 8px;">
+                    카이피라(C), 프릴아이스(F), 버터헤드(B), 레드오크(O), 로메인(R), 케일(K), 적근대(S)<br>
+                    치커리(E), 적채(A), 양배추(D), 양상추(X)
+                </td>
+            </tr>
+            <tr>
+                <td colspan="4" style="text-align: left; font-size: 8pt; padding: 4px 8px; border-top:1px dashed #999;">
+                    공급업체 구분: 구름 (G01) , 에상스팜(H02), 승승장구(S01), 한스(K01)
+                </td>
+            </tr>
+            <tr class="bg-gray">
+                <th rowspan="2">제품명</th>
+                <th rowspan="2">원료명</th>
+                <th colspan="7">작업원물 정보</th>
+            </tr>
+            <tr class="bg-gray">
+                <th>원료코드</th>
+                <th>상태</th>
+                <th>점검 항목</th>
+                <th>절단규격</th>
+                <th>생산량(전)</th>
+                <th>투입량(후)</th>
+                <th>비고</th>
+            </tr>
+            {rows_html}
+        </table>
+    </body>
+    </html>
+    """
+    return html
 
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
 
@@ -185,13 +321,11 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
     
-    # 1. 26.0906 형태
     m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
     if m_dot_digit:
         yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 2. YYYY-MM-DD, YYYY.MM.DD, YY.MM.DD
     m_full = re.search(r"(\d{2,4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
         p1 = m_full.group(1)
@@ -200,14 +334,12 @@ def extract_yymmdd_and_mmdd(val):
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 3. YYMMDD 6자리
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
         return d[:2], d, d[2:]
 
     current_yy = datetime.now().strftime("%y")
-    # 4. MM/DD 또는 MM월 DD일
     m_short = re.search(r"(\d{1,2})\s*[-./월]\s*(\d{1,2})", val_str)
     if m_short:
         mm = m_short.group(1).zfill(2)
@@ -226,8 +358,7 @@ def extract_yymmdd_and_mmdd(val):
 
 def find_stock_sheet_name(xls):
     for sheet_name in xls.sheet_names:
-        if sheet_name.strip().lower() == "sheet1":
-            return sheet_name
+        if sheet_name.strip().lower() == "sheet1": return sheet_name
     keywords = ["양상추", "양배추", "적채"]
     for sheet_name in xls.sheet_names:
         try:
@@ -236,8 +367,7 @@ def find_stock_sheet_name(xls):
                 row_str = " ".join(row.dropna().astype(str).tolist())
                 if all(k in row_str for k in keywords):
                     return sheet_name
-        except Exception:
-            continue
+        except Exception: continue
     return xls.sheet_names[0]
 
 def parse_and_convert_to_standard_ledger(excel_file):
@@ -253,7 +383,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         except Exception: return 0.0
 
     raw_parsed_list = []
-
     for idx, row in df_raw.iterrows():
         if len(row) == 0 or pd.isna(row.iloc[0]): continue
         a_val = str(row.iloc[0]).strip()
@@ -281,7 +410,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
             "j_in": j_in, "j_use": j_use, "j_stk": j_stk
         })
 
-    # 날짜별 중복 집계 방지
     grouped_by_date = {}
     date_order = []
 
@@ -496,7 +624,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [1번째 탭 - 표 상단 단위 표기 추가]
+# [수정] 제품명 추출 로직 반영 
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -561,9 +689,17 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
             
+            # 날짜 추출
             prod_date = df_s.iloc[1, 0]
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
+
+            # 제품명 추출 및 치환 로직 추가
+            raw_product_name = str(df_s.iloc[1, 1]).strip()
+            if "샐러드 믹스 1000" in raw_product_name:
+                product_name = "브런치빈 샐러드믹스"
+            else:
+                product_name = raw_product_name if raw_product_name and raw_product_name.lower() != "nan" else "-"
 
             items = [df_s.iloc[1, 4], df_s.iloc[1, 7], df_s.iloc[1, 10], df_s.iloc[1, 13]]
             lots = [df_s.iloc[2, 5], df_s.iloc[2, 8], df_s.iloc[2, 11], df_s.iloc[2, 14]]
@@ -585,7 +721,10 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
 
                 records.append({
-                    "생산일자": formatted_prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
+                    "생산일자": formatted_prod_date, 
+                    "제품명": product_name,  # 제품명 추가
+                    "prod_yymmdd": prod_yymmdd, 
+                    "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
                     "실투입량(전)": round(a_val / 1000.0, 1), "준비양(후)": round(p_val / 1000.0, 1),
                     "has_lot": has_lot,
@@ -648,31 +787,31 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         final_rows.append(rec)
 
     df_report = pd.DataFrame(final_rows)
-    return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
+    # 제품명을 날짜 다음 열로 배치
+    return df_report[["생산일자", "제품명", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성 (4개 탭)
+# Streamlit 화면 구성 (5개 탭)
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 원료코드 대조표 (자동 연동)",
     "📊 표준 원재료 수불부 정리",
     "🏷️ 원료코드 생성 및 일자별 정리",
-    "🔒 당월 수불 마감 확정"
+    "🔒 당월 수불 마감 확정",
+    "📋 전처리 공정일지 출력"  # 신규 탭 추가
 ])
 
 if excel_file is not None:
     try:
         excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
+        df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
 
         # --- Tab 1: 원료코드 대조표 ---
         with tab1:
-            df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
             if not df_result.empty:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 및 매입자료 기반 원료코드 대조가 완료되었습니다!")
                 
-                # 표 맨 위 상단 단위 안내 표시
                 st.markdown("##### 📌 (단위: kg)")
-                
                 col_d, col_p = st.columns([3, 1])
                 with col_d:
                     buffer = io.BytesIO()
@@ -772,7 +911,27 @@ if excel_file is not None:
             if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
                 save_closed_lots(closed_ym_input, final_lots)
                 st.balloons()
-                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! (양상추 264.0kg / 양배추 145.0kg / 적채 81.0kg)")
+                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다!")
+
+        # --- Tab 5: 전처리 공정일지 생성 (신규) ---
+        with tab5:
+            st.subheader("📋 전처리 공정일지 자동 생성 및 출력")
+            if not df_result.empty:
+                unique_dates = sorted(df_result["생산일자"].unique())
+                
+                col_date, col_empty = st.columns([1, 2])
+                with col_date:
+                    selected_date = st.selectbox("📅 출력할 생산일자를 선택하세요", unique_dates)
+                
+                # 선택한 날짜의 데이터만 필터링
+                df_target = df_result[df_result["생산일자"] == selected_date]
+                
+                st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 A4에 맞게 인쇄됩니다.")
+                
+                html_process_log = render_process_log_html(selected_date, df_target)
+                components.html(html_process_log, height=800, scrolling=True)
+            else:
+                st.warning("데이터를 불러오지 못했습니다. 업로드한 파일을 확인해주세요.")
 
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
@@ -786,3 +945,7 @@ else:
         st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 일자별로 자동 생성된 원료코드 표가 출력됩니다.")
     with tab4:
         st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 마감 대상 잔여 롯트를 확인할 수 있습니다.")
+    with tab5:
+        st.info("👆 엑셀 파일을 업로드하면 전처리 공정일지를 확인하고 출력할 수 있습니다.")
+
+```
