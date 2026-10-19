@@ -482,18 +482,18 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [수정 완벽 완료] 품목명 정밀 정제 후 FIFO 소진 코드 100% 매칭
+# [프릴/프릴아이스 예외 처리 반영] 1번째 탭 리포트 생성
 # ---------------------------------------------------------
-def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
+def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
 
-    # 2번째 탭 수불부 소진 코드 맵핑 사전 구축
-    subul_code_map = {}
-    for r in standard_rows:
-        dt = r["date"]
-        subul_code_map[(dt, "양상추")] = r.get("yangsangchu_code", "-")
-        subul_code_map[(dt, "양배추")] = r.get("yangbaechu_code", "-")
-        subul_code_map[(dt, "적채")] = r.get("jeokchae_code", "-")
+    # 3번째 탭 원료코드 사전 구축
+    code_summary_map = {}
+    for r in code_summary_rows:
+        dt = r.get("날짜", "")
+        item = r.get("원재료", "").strip()
+        c_code = r.get("생성코드", "-")
+        code_summary_map[(dt, item)] = c_code
 
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
@@ -540,11 +540,13 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
         raw_item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
         prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
         
-        # 품목명 정밀 정제 (공백 및 부가 문자 처리)
+        # '프릴' / '프릴아이스' 예외 판단
+        is_frill = "프릴" in raw_item
+
         if "양상추" in raw_item: lookup_item = "양상추"
         elif "양배추" in raw_item: lookup_item = "양배추"
         elif "적채" in raw_item: lookup_item = "적채"
-        elif "프릴" in raw_item: lookup_item = "프릴아이스"
+        elif is_frill: lookup_item = "프릴아이스"
         else: lookup_item = raw_item.strip()
 
         p = prefix_map.get(lookup_item, "X")
@@ -554,20 +556,24 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
             code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        # 수불부 소진 사전에서 정확한 FIFO 소진 코드 인출
-        code_subul = subul_code_map.get((prod_date, lookup_item), f"{p}{prod_yymmdd}-K1")
-        if not code_subul or code_subul == "-":
-            code_subul = f"{p}{prod_yymmdd}-K1"
-
-        code_purchase = code_subul
-
-        # 대조 판정 로직
-        if code_worklog != "없음" and (code_worklog in code_subul or code_worklog == f"{p}{prod_yymmdd}-K1"):
-            is_match = "일치"
-        elif code_worklog == "없음":
-            is_match = "불일치(작업일지 미기재)"
+        # 프릴계열 품목은 3번째 탭에 없으므로 수불부 기준코드를 공란('-')으로 설정
+        if is_frill:
+            code_subul = "-"
+            code_purchase = "-"
+            is_match = "불일치(수불부 대상 제외 품목)"
         else:
-            is_match = "불일치(혼합/추측)"
+            code_subul = code_summary_map.get((prod_date, lookup_item), f"{p}{prod_yymmdd}-K1")
+            if not code_subul or code_subul == "-":
+                code_subul = f"{p}{prod_yymmdd}-K1"
+
+            code_purchase = code_subul
+
+            if code_worklog != "없음" and (code_worklog in code_subul or code_worklog == f"{p}{prod_yymmdd}-K1"):
+                is_match = "일치"
+            elif code_worklog == "없음":
+                is_match = "불일치(작업일지 미기재)"
+            else:
+                is_match = "불일치(혼합/추측)"
 
         rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
         final_rows.append(rec)
@@ -591,7 +597,7 @@ if excel_file is not None:
 
         # --- Tab 1: 원료코드 대조표 ---
         with tab1:
-            df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
+            df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
             if not df_result.empty:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
                 
