@@ -17,7 +17,7 @@ st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", 
 DB_FILE = "stock_master.db"
 
 # ---------------------------------------------------------
-# DB 초기화 및 관리 함수 (전월 마감 롯트 데이터베이스)
+# DB 관리 함수 (초기화 기능 추가)
 # ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -35,8 +35,15 @@ def init_db():
     conn.commit()
     conn.close()
 
+def clear_db():
+    """DB를 완전히 초기화하여 과거 이월 롯트를 제거합니다."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM closed_lots")
+    conn.commit()
+    conn.close()
+
 def get_latest_closed_lots():
-    """가장 최근 마감월의 잔여 롯트 목록을 가져옵니다."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT MAX(closed_ym) FROM closed_lots")
@@ -54,7 +61,7 @@ def get_latest_closed_lots():
                 lots[item_name].append({
                     "yymmdd": yymmdd,
                     "avail_g": avail_g,
-                    "avail": avail_g,  # avail 키 추가 보장
+                    "avail": avail_g,
                     "vendor": vendor,
                     "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 이월",
                     "is_from_db": True
@@ -63,7 +70,6 @@ def get_latest_closed_lots():
     return max_ym, lots
 
 def save_closed_lots(closed_ym, item_lots):
-    """당월 마감 시, 남은 기말 롯트 재고를 마감 DB에 확정 저장합니다."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM closed_lots WHERE closed_ym = ?", (closed_ym,))
@@ -78,43 +84,6 @@ def save_closed_lots(closed_ym, item_lots):
                 )
     conn.commit()
     conn.close()
-
-def import_db_from_file(uploaded_db_file, closed_ym):
-    """사용자가 직접 업로드한 전월 마감 재고 엑셀/CSV를 DB로 로드합니다."""
-    try:
-        if uploaded_db_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_db_file)
-        else:
-            df = pd.read_excel(uploaded_db_file)
-
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM closed_lots WHERE closed_ym = ?", (closed_ym,))
-
-        for _, row in df.iterrows():
-            row_str = " ".join(row.dropna().astype(str).tolist())
-            item_name = "양상추" if "양상추" in row_str else ("양배추" if "양배추" in row_str else ("적채" if "적채" in row_str else "프릴아이스"))
-            
-            m_date = re.search(r"\b(\d{6})\b", row_str)
-            yymmdd = m_date.group(1) if m_date else datetime.now().strftime("%y%m%d")
-            
-            nums = [float(val) for val in row if isinstance(val, (int, float)) and val > 0]
-            avail_g = (nums[0] * 1000.0) if nums else 0.0
-
-            m_v = re.search(r"\b([A-Z]\d{1,2})\b", row_str)
-            vendor = m_v.group(1) if m_v else "K1"
-
-            if avail_g > 0:
-                cursor.execute(
-                    "INSERT INTO closed_lots (item_name, yymmdd, avail_g, vendor, closed_ym) VALUES (?, ?, ?, ?, ?)",
-                    (item_name, yymmdd, avail_g, vendor, closed_ym)
-                )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.sidebar.error(f"DB 파일 처리 중 오류 발생: {e}")
-        return False
 
 init_db()
 
@@ -150,7 +119,7 @@ st.markdown("""
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
 
 # ---------------------------------------------------------
-# 사이드바: 전월 마감 DB 관리
+# 사이드바: 전월 마감 DB 관리 및 리셋
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("🗄️ 마스터 수불 DB 관리")
@@ -165,21 +134,17 @@ with st.sidebar:
                     for l in v:
                         st.write(f"- 입고일: {l['yymmdd']} | 잔여: {round(l['avail_g']/1000.0, 1)}kg")
     else:
-        st.warning("⚠️ 등록된 전월 마감 DB가 없습니다.\n아래에서 전월 마감 엑셀/CSV를 업로드해 주세요.")
+        st.info("💡 등록된 전월 마감 DB가 없습니다.\n당월 업로드 엑셀의 9월 4일 입고분부터 순서대로 소진됩니다.")
 
     st.markdown("---")
-    st.subheader("📥 3. 전월 마감 재고 DB 업로드 (수동 등록/초기화)")
-    init_ym_input = st.text_input("업로드할 마감월 지정 (YYYY-MM)", value="2024-02")
-    uploaded_init_db = st.file_uploader("전월 이월 재고 롯트 파일 (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="init_db_uploader")
-    
-    if uploaded_init_db is not None and st.button("전월 마감 DB 수동 등록", type="secondary"):
-        if import_db_from_file(uploaded_init_db, init_ym_input):
-            st.success(f"✅ {init_ym_input} 전월 마감 DB가 등록되었습니다!")
-            st.rerun()
+    if st.button("🗑️ 과거 이월 DB 완전 초기화", type="secondary"):
+        clear_db()
+        st.success("✅ DB가 초기화되었습니다!")
+        st.rerun()
 
 col1, col2 = st.columns(2)
 with col1:
-    excel_file = st.file_uploader("1. 샐러드 생산일지 (Excel) 업로드 (당월 재고/매입자료 포함)", type=["xlsx", "xls"])
+    excel_file = st.file_uploader("1. 샐러드 생산일지 (Excel) 업로드", type=["xlsx", "xls"])
 with col2:
     csv_file = st.file_uploader("2. 원료 매입 입고자료 / 수불부 (CSV/Excel) 업로드", type=["csv", "xlsx", "xls"])
 
@@ -239,7 +204,7 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# [오류 수정 완료] 'avail' 키 예외 없는 FIFO 수불부 연동 파싱
+# [수정] 수불부 A~J열 매핑 및 9/4 매입 우선 FIFO 처리
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
@@ -265,6 +230,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
+        # A(0):날짜 | B(1):양상추매입 | C(2):양상추기말 | D(3):양상추투입
+        # E(4):양배추매입 | F(5):양배추기말 | G(6):양배추투입
+        # H(7):적채매입   | I(8):적채기말   | J(9):적채투입
         y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
         y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
         y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
@@ -310,21 +278,8 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
         if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
 
-    # FIFO 소진 큐 생성 및 'avail' 키 보장
-    _, db_lots = get_latest_closed_lots()
-    item_queues = {
-        "yangsangchu": copy.deepcopy(db_lots["양상추"]),
-        "yangbaechu": copy.deepcopy(db_lots["양배추"]),
-        "jeokchae": copy.deepcopy(db_lots["적채"])
-    }
-
-    # 큐 내 항목 'avail' 속성 안전 처리
-    for k in item_queues:
-        for q in item_queues[k]:
-            if "avail" not in q:
-                q["avail"] = q.get("avail_g", 0.0)
-            if "label" not in q:
-                q["label"] = f"{q['yymmdd'][2:4]}/{q['yymmdd'][4:]} 이월"
+    # FIFO 소진 큐 초기화 (당월 업로드 매입분 우선)
+    item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
 
     data_rows = []
     generated_code_rows = []
@@ -346,12 +301,11 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
             for lot in item_queues[item_key]:
                 if rem <= 0: break
-                avail_val = lot.get("avail", lot.get("avail_g", 0.0))
+                avail_val = lot.get("avail", 0.0)
                 if avail_val <= 0: continue
                 
                 u = min(avail_val, rem)
                 lot["avail"] = avail_val - u
-                lot["avail_g"] = lot["avail"]
                 rem -= u
 
                 vendor = lot.get("vendor", "K1")
@@ -455,9 +409,9 @@ def parse_and_convert_to_standard_ledger(excel_file):
     wb.save(buffer)
 
     final_remaining_lots = {
-        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q.get("avail", q.get("avail_g", 0.0)) > 0],
-        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q.get("avail", q.get("avail_g", 0.0)) > 0],
-        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", q.get("avail_g", 0.0)), "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q.get("avail", q.get("avail_g", 0.0)) > 0]
+        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", 0.0), "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q.get("avail", 0.0) > 0],
+        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", 0.0), "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q.get("avail", 0.0) > 0],
+        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q.get("avail", 0.0), "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q.get("avail", 0.0) > 0]
     }
 
     return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet, final_remaining_lots
@@ -583,7 +537,7 @@ if excel_file is not None:
 
         # --- Tab 2: 표준 원재료 수불부 ---
         with tab2:
-            st.subheader("📋 표준 원재료 수불부 (A~J열 정밀 파싱 완료)")
+            st.subheader("📋 표준 원재료 수불부 (소진 매입일 9/4 우선 연동 완료)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
