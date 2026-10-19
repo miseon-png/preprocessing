@@ -173,7 +173,7 @@ with col2:
 prefix_map = {"양상추": "X", "양배추": "D", "적채": "A", "프릴": "F", "프릴아이스": "F"}
 
 # ---------------------------------------------------------
-# [날짜 정밀 정제 함수] 26.0906 / 26.09.06 / 2026-09-06 완전 지원
+# [실제 생산일지 서식 대응] 날짜 완벽 정밀 추출 함수
 # ---------------------------------------------------------
 def extract_yymmdd_and_mmdd(val):
     if pd.isna(val):
@@ -184,7 +184,7 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
     
-    # 1. 26.0906 형태 (소수점 1개)
+    # 1. 26.0906 형식 (소수점 1개로 연결된 6자리 표현)
     m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
     if m_dot_digit:
         yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
@@ -199,14 +199,14 @@ def extract_yymmdd_and_mmdd(val):
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # 3. YYMMDD 6자리
+    # 3. 6자리 연속 숫자 (260906)
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
         return d[:2], d, d[2:]
 
     current_yy = datetime.now().strftime("%y")
-    # 4. MM/DD 또는 MM월 DD일
+    # 4. 월/일 (MM/DD 또는 MM월 DD일)
     m_short = re.search(r"(\d{1,2})\s*[-./월]\s*(\d{1,2})", val_str)
     if m_short:
         mm = m_short.group(1).zfill(2)
@@ -240,38 +240,40 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 def parse_and_convert_to_standard_ledger(excel_file):
-    xls = pd.ExcelFile(excel_file)
-    stock_sheet = find_stock_sheet_name(xls)
-    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
+    wb_in = openpyxl.load_workbook(excel_file, data_only=True)
+    stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
+    ws_in = wb_in[stock_sheet]
 
     def parse_cell(val):
-        if pd.isna(val): return 0.0
+        if val is None: return 0.0
+        if isinstance(val, (int, float)): return float(val)
         try:
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
-        except Exception: return 0.0
+        except Exception:
+            return 0.0
 
     raw_parsed_list = []
 
-    for idx, row in df_raw.iterrows():
-        if len(row) == 0 or pd.isna(row.iloc[0]): continue
-        a_val = str(row.iloc[0]).strip()
-        if not a_val or "날짜" in a_val or "입고" in a_val or "매입" in a_val: continue
+    for row in ws_in.iter_rows(min_row=2, values_only=True):
+        if not row or row[0] is None: continue
+        raw_date = row[0]
+        if "날짜" in str(raw_date): continue
 
-        _, yymmdd, _ = extract_yymmdd_and_mmdd(a_val)
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_in  = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
-        y_stk = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0
-        y_use = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
+        y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
+        y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
+        y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
 
-        b_in  = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0
-        b_stk = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
-        b_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0
+        b_in  = parse_cell(row[4]) if len(row) > 4 else 0.0
+        b_stk = parse_cell(row[5]) if len(row) > 5 else 0.0
+        b_use = parse_cell(row[6]) if len(row) > 6 else 0.0
 
-        j_in  = parse_cell(row.iloc[7]) if len(row) > 7 else 0.0
-        j_stk = parse_cell(row.iloc[8]) if len(row) > 8 else 0.0
-        j_use = parse_cell(row.iloc[9]) if len(row) > 9 else 0.0
+        j_in  = parse_cell(row[7]) if len(row) > 7 else 0.0
+        j_stk = parse_cell(row[8]) if len(row) > 8 else 0.0
+        j_use = parse_cell(row[9]) if len(row) > 9 else 0.0
 
         raw_parsed_list.append({
             "date": formatted_date, "yymmdd": yymmdd,
@@ -494,7 +496,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [생산일지 시트 A2 셀(1행 0열) 날짜 정밀 읽기]
+# [일일 생산일지 시트 날짜 A2(1행0열) 정밀 추출 로직]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -517,7 +519,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
             
-            # 생산일지 시트 날짜는 1행 0열(A2 셀)에 지정
+            # 생산일지 시트에서 날짜는 1행 0열(A2 셀)에 정확히 위치함
             prod_date = df_s.iloc[1, 0]
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
