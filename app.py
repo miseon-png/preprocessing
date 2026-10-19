@@ -172,6 +172,9 @@ with col2:
 
 prefix_map = {"양상추": "X", "양배추": "D", "적채": "A", "프릴": "F", "프릴아이스": "F"}
 
+# ---------------------------------------------------------
+# [날짜 정밀 정제 함수] 26.0906 / 26.09.06 / 2026-09-06 완벽 정제
+# ---------------------------------------------------------
 def extract_yymmdd_and_mmdd(val):
     if pd.isna(val):
         today = datetime.now()
@@ -180,12 +183,35 @@ def extract_yymmdd_and_mmdd(val):
         return val.strftime("%y"), val.strftime("%y%m%d"), val.strftime("%m%d")
 
     val_str = str(val).strip()
-    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
+    
+    # 1. 26.0906 형태 (소수점 1개)
+    m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
+    if m_dot_digit:
+        yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
+
+    # 2. YYYY-MM-DD, YYYY.MM.DD, YY.MM.DD
+    m_full = re.search(r"(\d{2,4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
-        yy = m_full.group(1)[2:]
+        p1 = m_full.group(1)
+        yy = p1[2:] if len(p1) == 4 else p1.zfill(2)
         mm = m_full.group(2).zfill(2)
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
+
+    # 3. YYMMDD 6자리
+    m_digits = re.search(r"\b(\d{6})\b", val_str)
+    if m_digits:
+        d = m_digits.group(1)
+        return d[:2], d, d[2:]
+
+    current_yy = datetime.now().strftime("%y")
+    # 4. MM/DD 또는 MM월 DD일
+    m_short = re.search(r"(\d{1,2})\s*[-./월]\s*(\d{1,2})", val_str)
+    if m_short:
+        mm = m_short.group(1).zfill(2)
+        dd = m_short.group(2).zfill(2)
+        return current_yy, f"{current_yy}{mm}{dd}", f"{mm}{dd}"
 
     try:
         dt = pd.to_datetime(val_str, errors="coerce", yearfirst=True)
@@ -193,18 +219,6 @@ def extract_yymmdd_and_mmdd(val):
             return dt.strftime("%y"), dt.strftime("%y%m%d"), dt.strftime("%m%d")
     except Exception:
         pass
-
-    current_yy = datetime.now().strftime("%y")
-    m_short = re.search(r"(\d{1,2})[-./](\d{1,2})", val_str)
-    if m_short:
-        p1, p2 = m_short.group(1).zfill(2), m_short.group(2).zfill(2)
-        yy, mm, dd = (p1, p2, "01") if int(p1) > 12 else (current_yy, p1, p2)
-        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
-
-    m_digits = re.search(r"\b(\d{6})\b", val_str)
-    if m_digits:
-        d = m_digits.group(1)
-        return d[:2], d, d[2:]
 
     today = datetime.now()
     return current_yy, today.strftime("%y%m%d"), today.strftime("%m%d")
@@ -226,40 +240,38 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 def parse_and_convert_to_standard_ledger(excel_file):
-    wb_in = openpyxl.load_workbook(excel_file, data_only=True)
-    stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
-    ws_in = wb_in[stock_sheet]
+    xls = pd.ExcelFile(excel_file)
+    stock_sheet = find_stock_sheet_name(xls)
+    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
     def parse_cell(val):
-        if val is None: return 0.0
-        if isinstance(val, (int, float)): return float(val)
+        if pd.isna(val): return 0.0
         try:
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
-        except Exception:
-            return 0.0
+        except Exception: return 0.0
 
     raw_parsed_list = []
 
-    for row in ws_in.iter_rows(min_row=2, values_only=True):
-        if not row or row[0] is None: continue
-        raw_date = row[0]
-        if "날짜" in str(raw_date): continue
+    for idx, row in df_raw.iterrows():
+        if len(row) == 0 or pd.isna(row.iloc[0]): continue
+        a_val = str(row.iloc[0]).strip()
+        if not a_val or "날짜" in a_val or "입고" in a_val or "매입" in a_val: continue
 
-        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(a_val)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
-        y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
-        y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
+        y_in  = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
+        y_stk = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0
+        y_use = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
 
-        b_in  = parse_cell(row[4]) if len(row) > 4 else 0.0
-        b_stk = parse_cell(row[5]) if len(row) > 5 else 0.0
-        b_use = parse_cell(row[6]) if len(row) > 6 else 0.0
+        b_in  = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0
+        b_stk = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
+        b_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0
 
-        j_in  = parse_cell(row[7]) if len(row) > 7 else 0.0
-        j_stk = parse_cell(row[8]) if len(row) > 8 else 0.0
-        j_use = parse_cell(row[9]) if len(row) > 9 else 0.0
+        j_in  = parse_cell(row.iloc[7]) if len(row) > 7 else 0.0
+        j_stk = parse_cell(row.iloc[8]) if len(row) > 8 else 0.0
+        j_use = parse_cell(row.iloc[9]) if len(row) > 9 else 0.0
 
         raw_parsed_list.append({
             "date": formatted_date, "yymmdd": yymmdd,
@@ -349,14 +361,17 @@ def parse_and_convert_to_standard_ledger(excel_file):
             "yangsangchu_in": round(g["y_in"] / 1000.0, 1), 
             "yangsangchu_use": round(g["y_use"] / 1000.0, 1), 
             "yangsangchu_source": y_src, 
+            "yangsangchu_code": y_code,
             "yangsangchu_stock": round(g["y_stk"] / 1000.0, 1),
             "yangbaechu_in": round(g["b_in"] / 1000.0, 1), 
             "yangbaechu_use": round(g["b_use"] / 1000.0, 1), 
             "yangbaechu_source": b_src, 
+            "yangbaechu_code": b_code,
             "yangbaechu_stock": round(g["b_stk"] / 1000.0, 1),
             "jeokchae_in": round(g["j_in"] / 1000.0, 1), 
             "jeokchae_use": round(g["j_use"] / 1000.0, 1), 
             "jeokchae_source": j_src, 
+            "jeokchae_code": j_code,
             "jeokchae_stock": round(g["j_stk"] / 1000.0, 1),
             "note": note
         }
@@ -478,9 +493,21 @@ def parse_csv_purchase(uploaded_file):
         except Exception: continue
     return pd.DataFrame()
 
-def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
+# ---------------------------------------------------------
+# [3번째 탭 code_summary_rows 직접 참조 및 프릴 공란 처리]
+# ---------------------------------------------------------
+def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
-    df_csv = parse_csv_purchase(csv_file)
+
+    # 3번째 탭 원료코드 사전 구축
+    code_summary_map = {}
+    for r in code_summary_rows:
+        raw_dt = r.get("날짜", "")
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_dt)
+        std_dt = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
+        item = r.get("원재료", "").strip()
+        c_code = r.get("생성코드", "-")
+        code_summary_map[(std_dt, item)] = c_code
 
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
@@ -488,9 +515,13 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
     records = []
     for sheet in daily_sheets:
         try:
-            df_s = pd.read_excel(excel_file, sheet_name=sheet)
+            df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
-            prod_date = df_s.iloc[0, 0]
+            
+            # 일간 생산일지 날짜는 A2 셀(1행 0열)에 정확히 위치함
+            prod_date = df_s.iloc[1, 0]
+            if pd.isna(prod_date) or "작업" in str(prod_date):
+                prod_date = df_s.iloc[0, 0]
 
             items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
             lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]
@@ -509,8 +540,10 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
                 has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
                 _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
 
+                formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
+
                 records.append({
-                    "생산일자": prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
+                    "생산일자": formatted_prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
                     "실투입 양 (kg)": round(a_val / 1000.0, 1), "준비 양 (kg)": round(p_val / 1000.0, 1),
                     "has_lot": has_lot,
@@ -522,23 +555,40 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
 
     final_rows = []
     for rec in records:
-        item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
-        prod_date, prod_yymmdd, act_g = rec["생산일자"], rec["prod_yymmdd"], rec["act_g"]
-        lookup_item = "프릴아이스" if "프릴" in item else item
-        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
+        raw_item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
+        prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
+        
+        is_frill = "프릴" in raw_item
+
+        if "양상추" in raw_item: lookup_item = "양상추"
+        elif "양배추" in raw_item: lookup_item = "양배추"
+        elif "적채" in raw_item: lookup_item = "적채"
+        elif is_frill: lookup_item = "프릴아이스"
+        else: lookup_item = raw_item.strip()
+
+        p = prefix_map.get(lookup_item, "X")
 
         if has_lot:
             _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
             code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
         else: code_worklog = "없음"
 
-        code_subul = f"{p}{prod_yymmdd}-K1"
-        code_purchase = code_subul
+        # 프릴계열 품목은 수불부 및 매입자료 코드를 공란('-')으로 처리
+        if is_frill:
+            code_subul = "-"
+            code_purchase = "-"
+            is_match = "불일치(수불부 대상 제외 품목)"
+        else:
+            # 3번째 탭에서 생성된 원료코드를 100% 직통 가져옴
+            code_subul = code_summary_map.get((prod_date, lookup_item), "-")
+            code_purchase = code_subul
 
-        if code_worklog != "없음" and code_purchase != "" and code_worklog in code_purchase: is_match = "일치"
-        elif code_worklog != "없음" and code_purchase == "" and code_worklog == code_subul: is_match = "일치"
-        elif code_worklog == "없음": is_match = "불일치(작업일지 미기재)"
-        else: is_match = "불일치(혼합/추측)"
+            if code_worklog != "없음" and (code_worklog in code_subul or code_worklog == f"{p}{prod_yymmdd}-K1"):
+                is_match = "일치"
+            elif code_worklog == "없음":
+                is_match = "불일치(작업일지 미기재)"
+            else:
+                is_match = "불일치(혼합/추측)"
 
         rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
         final_rows.append(rec)
@@ -547,7 +597,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
     return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성
+# Streamlit 화면 구성 (4개 탭)
 # ---------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 원료코드 대조표 (자동 연동)",
@@ -562,7 +612,7 @@ if excel_file is not None:
 
         # --- Tab 1: 원료코드 대조표 ---
         with tab1:
-            df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
+            df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
             if not df_result.empty:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
                 
@@ -665,7 +715,7 @@ if excel_file is not None:
             if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
                 save_closed_lots(closed_ym_input, final_lots)
                 st.balloons()
-                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! (양상추 264.0kg / 양배추 145.0kg / 적채 81.0kg)")
+                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다!")
 
     except Exception as e:
         st.error(f"처리 중 오류가 발생했습니다: {e}")
