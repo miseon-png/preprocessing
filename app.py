@@ -173,7 +173,7 @@ with col2:
 prefix_map = {"양상추": "X", "양배추": "D", "적채": "A", "프릴": "F", "프릴아이스": "F"}
 
 # ---------------------------------------------------------
-# [오류 수정 완료] 날짜 파싱 왜곡(9/6 -> 9/1 현상) 완전 방지
+# [날짜 정밀 정제 함수] 26.0906 / 26.09.06 / 2026-09-06 완전 지원
 # ---------------------------------------------------------
 def extract_yymmdd_and_mmdd(val):
     if pd.isna(val):
@@ -184,23 +184,29 @@ def extract_yymmdd_and_mmdd(val):
 
     val_str = str(val).strip()
     
-    # YYYY-MM-DD 또는 YY-MM-DD
-    m_full = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
+    # 1. 26.0906 형태 (소수점 1개)
+    m_dot_digit = re.search(r"(\d{2})\.(\d{2})(\d{2})", val_str)
+    if m_dot_digit:
+        yy, mm, dd = m_dot_digit.group(1), m_dot_digit.group(2), m_dot_digit.group(3)
+        return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
+
+    # 2. YYYY-MM-DD, YYYY.MM.DD, YY.MM.DD
+    m_full = re.search(r"(\d{2,4})[-./](\d{1,2})[-./](\d{1,2})", val_str)
     if m_full:
-        yy = m_full.group(1)[2:]
+        p1 = m_full.group(1)
+        yy = p1[2:] if len(p1) == 4 else p1.zfill(2)
         mm = m_full.group(2).zfill(2)
         dd = m_full.group(3).zfill(2)
         return yy, f"{yy}{mm}{dd}", f"{mm}{dd}"
 
-    # YYMMDD (6자리 숫자)
+    # 3. YYMMDD 6자리
     m_digits = re.search(r"\b(\d{6})\b", val_str)
     if m_digits:
         d = m_digits.group(1)
         return d[:2], d, d[2:]
 
     current_yy = datetime.now().strftime("%y")
-    
-    # MM/DD 또는 MM월 DD일 정밀 파싱
+    # 4. MM/DD 또는 MM월 DD일
     m_short = re.search(r"(\d{1,2})\s*[-./월]\s*(\d{1,2})", val_str)
     if m_short:
         mm = m_short.group(1).zfill(2)
@@ -234,40 +240,38 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 def parse_and_convert_to_standard_ledger(excel_file):
-    wb_in = openpyxl.load_workbook(excel_file, data_only=True)
-    stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
-    ws_in = wb_in[stock_sheet]
+    xls = pd.ExcelFile(excel_file)
+    stock_sheet = find_stock_sheet_name(xls)
+    df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
     def parse_cell(val):
-        if val is None: return 0.0
-        if isinstance(val, (int, float)): return float(val)
+        if pd.isna(val): return 0.0
         try:
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
-        except Exception:
-            return 0.0
+        except Exception: return 0.0
 
     raw_parsed_list = []
 
-    for row in ws_in.iter_rows(min_row=2, values_only=True):
-        if not row or row[0] is None: continue
-        raw_date = row[0]
-        if "날짜" in str(raw_date): continue
+    for idx, row in df_raw.iterrows():
+        if len(row) == 0 or pd.isna(row.iloc[0]): continue
+        a_val = str(row.iloc[0]).strip()
+        if not a_val or "날짜" in a_val or "입고" in a_val or "매입" in a_val: continue
 
-        _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
+        _, yymmdd, _ = extract_yymmdd_and_mmdd(a_val)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
-        y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
-        y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
+        y_in  = parse_cell(row.iloc[1]) if len(row) > 1 else 0.0
+        y_stk = parse_cell(row.iloc[2]) if len(row) > 2 else 0.0
+        y_use = parse_cell(row.iloc[3]) if len(row) > 3 else 0.0
 
-        b_in  = parse_cell(row[4]) if len(row) > 4 else 0.0
-        b_stk = parse_cell(row[5]) if len(row) > 5 else 0.0
-        b_use = parse_cell(row[6]) if len(row) > 6 else 0.0
+        b_in  = parse_cell(row.iloc[4]) if len(row) > 4 else 0.0
+        b_stk = parse_cell(row.iloc[5]) if len(row) > 5 else 0.0
+        b_use = parse_cell(row.iloc[6]) if len(row) > 6 else 0.0
 
-        j_in  = parse_cell(row[7]) if len(row) > 7 else 0.0
-        j_stk = parse_cell(row[8]) if len(row) > 8 else 0.0
-        j_use = parse_cell(row[9]) if len(row) > 9 else 0.0
+        j_in  = parse_cell(row.iloc[7]) if len(row) > 7 else 0.0
+        j_stk = parse_cell(row.iloc[8]) if len(row) > 8 else 0.0
+        j_use = parse_cell(row.iloc[9]) if len(row) > 9 else 0.0
 
         raw_parsed_list.append({
             "date": formatted_date, "yymmdd": yymmdd,
@@ -490,7 +494,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [3번째 탭 code_summary_rows 정밀 연동] 1번째 탭 리포트 생성
+# [생산일지 시트 A2 셀(1행 0열) 날짜 정밀 읽기]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -510,9 +514,13 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     records = []
     for sheet in daily_sheets:
         try:
-            df_s = pd.read_excel(excel_file, sheet_name=sheet)
+            df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
-            prod_date = df_s.iloc[0, 0]
+            
+            # 생산일지 시트 날짜는 1행 0열(A2 셀)에 지정
+            prod_date = df_s.iloc[1, 0]
+            if pd.isna(prod_date) or "작업" in str(prod_date):
+                prod_date = df_s.iloc[0, 0]
 
             items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
             lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]
@@ -673,8 +681,6 @@ if excel_file is not None:
                 item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
                 df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
                 df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
-
-                st.dataframe(df_code_summary, use_container_width=True)
 
                 col_d3, col_p3 = st.columns([3, 1])
                 with col_d3:
