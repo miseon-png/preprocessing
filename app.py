@@ -394,3 +394,272 @@ def parse_and_convert_to_standard_ledger(excel_file):
     header_fill_main = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     header_fill_sub = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
     regular_font = Font(name="맑은 고딕", size=10)
+    thin_border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
+                         top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
+
+    headers_main = [("A2:A3", "일자"), ("B2:F2", "양상추"), ("G2:K2", "양배추"), ("L2:P2", "적채"), ("Q2:Q3", "비고")]
+    for cell_range, title in headers_main:
+        ws.merge_cells(cell_range)
+        ws[cell_range.split(":")[0]] = title
+
+    for col_idx in range(1, 18):
+        c = ws.cell(row=2, column=col_idx)
+        c.fill, c.font, c.alignment = header_fill_main, Font(name="맑은 고딕", size=11, bold=True, color="FFFFFF"), Alignment(horizontal="center", vertical="center")
+
+    sub_headers = ["기초재고", "입고량", "투입량", "소진 매입일자(상세)", "기말재고"]
+    for start_col in [2, 7, 12]:
+        for idx, sub in enumerate(sub_headers):
+            c = ws.cell(row=3, column=start_col + idx, value=sub)
+            c.fill, c.font, c.alignment = header_fill_sub, Font(name="맑은 고딕", size=10, bold=True, color="1F4E79"), Alignment(horizontal="center", vertical="center")
+
+    start_row = 4
+    for r_idx, item in enumerate(data_rows, start=start_row):
+        ws.cell(row=r_idx, column=1, value=item["date"]).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=r_idx, column=17, value=item.get("note", "")).alignment = Alignment(horizontal="left", vertical="center")
+
+        items_map = [
+            (2, item.get("yangsangchu_in", 0), item.get("yangsangchu_use", 0), item.get("yangsangchu_source", "-"), item.get("yangsangchu_stock", 0)),
+            (7, item.get("yangbaechu_in", 0), item.get("yangbaechu_use", 0), item.get("yangbaechu_source", "-"), item.get("yangbaechu_stock", 0)),
+            (12, item.get("jeokchae_in", 0), item.get("jeokchae_use", 0), item.get("jeokchae_source", "-"), item.get("jeokchae_stock", 0))
+        ]
+
+        for start_col, in_val, use_val, source_str, stock_val in items_map:
+            end_col_let = get_column_letter(start_col + 4)
+            if r_idx == start_row:
+                ws.cell(row=r_idx, column=start_col, value=stock_val + use_val - in_val)
+            else:
+                ws.cell(row=r_idx, column=start_col, value=f"={end_col_let}{r_idx-1}")
+
+            ws.cell(row=r_idx, column=start_col + 1, value=in_val)
+            ws.cell(row=r_idx, column=start_col + 2, value=use_val)
+            ws.cell(row=r_idx, column=start_col + 3, value=source_str).alignment = Alignment(horizontal="center", vertical="center")
+            ws.cell(row=r_idx, column=start_col + 4, value=stock_val)
+
+        for c_idx in range(1, 18):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            cell.font, cell.border = regular_font, thin_border
+            if c_idx in [2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16]:
+                cell.number_format = "#,##0"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+
+    final_remaining_lots = {
+        "양상추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangsangchu"] if q["avail"] > 0],
+        "양배추": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["yangbaechu"] if q["avail"] > 0],
+        "적채": [{"yymmdd": q["yymmdd"], "avail_g": q["avail"], "vendor": q.get("vendor", "K1")} for q in item_queues["jeokchae"] if q["avail"] > 0]
+    }
+
+    return buffer.getvalue(), data_rows, generated_code_rows, stock_sheet, final_remaining_lots
+
+def parse_csv_purchase(uploaded_file):
+    if uploaded_file is None: return pd.DataFrame()
+    file_name = uploaded_file.name.lower()
+    if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
+        try: return pd.read_excel(uploaded_file)
+        except Exception: return pd.DataFrame()
+
+    encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
+    for enc in encodings:
+        try:
+            uploaded_file.seek(0)
+            return pd.read_csv(uploaded_file, encoding=enc)
+        except Exception: continue
+    return pd.DataFrame()
+
+def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name):
+    xls = pd.ExcelFile(excel_file)
+    df_csv = parse_csv_purchase(csv_file)
+
+    exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
+    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
+
+    records = []
+    for sheet in daily_sheets:
+        try:
+            df_s = pd.read_excel(excel_file, sheet_name=sheet)
+            if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
+            prod_date = df_s.iloc[0, 0]
+
+            items = [df_s.iloc[0, 4], df_s.iloc[0, 7], df_s.iloc[0, 10], df_s.iloc[0, 13]]
+            lots = [df_s.iloc[1, 5], df_s.iloc[1, 8], df_s.iloc[1, 11], df_s.iloc[1, 14]]
+            prep_pck = [df_s.iloc[2, 4], df_s.iloc[2, 7], df_s.iloc[2, 10], df_s.iloc[2, 13]]
+            actual_input = [df_s.iloc[4, 4], df_s.iloc[4, 7], df_s.iloc[4, 10], df_s.iloc[4, 13]]
+
+            for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
+                if pd.isna(item) or str(item).strip() == "" or str(item).strip().lower() == "nan": continue
+                try: p_val = float(prep) if pd.notna(prep) else 0.0
+                except (ValueError, TypeError): p_val = 0.0
+
+                try: a_val = float(act) if pd.notna(act) else 0.0
+                except (ValueError, TypeError): a_val = 0.0
+
+                lot_str = str(lot).strip() if pd.notna(lot) else ""
+                has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
+                _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
+
+                records.append({
+                    "생산일자": prod_date, "prod_yymmdd": prod_yymmdd, "품목": str(item).strip(),
+                    "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
+                    "실투입 양 (kg)": round(a_val / 1000.0, 1), "준비 양 (kg)": round(p_val / 1000.0, 1),
+                    "has_lot": has_lot,
+                })
+        except Exception: continue
+
+    if not records: return pd.DataFrame()
+    records.sort(key=lambda x: x["prod_yymmdd"])
+
+    final_rows = []
+    for rec in records:
+        item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
+        prod_date, prod_yymmdd, act_g = rec["생산일자"], rec["prod_yymmdd"], rec["act_g"]
+        lookup_item = "프릴아이스" if "프릴" in item else item
+        p = prefix_map.get(lookup_item, prefix_map.get(item, "X"))
+
+        if has_lot:
+            _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
+            code_worklog = f"{p}{yymmdd_worklog}-K1" if yymmdd_worklog else "없음"
+        else: code_worklog = "없음"
+
+        code_subul = f"{p}{prod_yymmdd}-K1"
+        code_purchase = code_subul
+
+        if code_worklog != "없음" and code_purchase != "" and code_worklog in code_purchase: is_match = "일치"
+        elif code_worklog != "없음" and code_purchase == "" and code_worklog == code_subul: is_match = "일치"
+        elif code_worklog == "없음": is_match = "불일치(작업일지 미기재)"
+        else: is_match = "불일치(혼합/추측)"
+
+        rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
+        final_rows.append(rec)
+
+    df_report = pd.DataFrame(final_rows)
+    return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
+
+# ---------------------------------------------------------
+# Streamlit 화면 구성 (4개 탭)
+# ---------------------------------------------------------
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 원료코드 대조표 (자동 연동)",
+    "📊 표준 원재료 수불부 정리",
+    "🏷️ 원료코드 생성 및 일자별 정리",
+    "🔒 당월 수불 마감 확정"
+])
+
+if excel_file is not None:
+    try:
+        excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
+
+        # --- Tab 1: 원료코드 대조표 ---
+        with tab1:
+            df_result = generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
+            if not df_result.empty:
+                st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
+                st.dataframe(df_result, use_container_width=True)
+
+                html_table = df_result.to_html(classes="print-table", index=False)
+                st.markdown(f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>', unsafe_allow_html=True)
+
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
+
+                st.download_button(
+                    label="📥 원료코드 대조표 다운로드 (.xlsx)",
+                    data=buffer.getvalue(),
+                    file_name="원료코드_비교_정리표.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+        # --- Tab 2: 표준 원재료 수불부 ---
+        with tab2:
+            st.subheader("📋 표준 원재료 수불부 (A~J열 투입량/기말재고 정확 파싱)")
+            df_preview = pd.DataFrame(standard_rows)
+            if "yymmdd" in df_preview.columns:
+                df_preview = df_preview.drop(columns=["yymmdd"])
+
+            ordered_cols = [
+                "date",
+                "yangsangchu_in", "yangsangchu_use", "yangsangchu_source", "yangsangchu_stock",
+                "yangbaechu_in", "yangbaechu_use", "yangbaechu_source", "yangbaechu_stock",
+                "jeokchae_in", "jeokchae_use", "jeokchae_source", "jeokchae_stock",
+                "note"
+            ]
+            df_preview = df_preview[[col for col in ordered_cols if col in df_preview.columns]]
+
+            korean_column_map = {
+                "date": "일자",
+                "yangsangchu_in": "양상추_입고량", "yangsangchu_use": "양상추_투입량", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고",
+                "yangbaechu_in": "양배추_입고량", "yangbaechu_use": "양배추_투입량", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고",
+                "jeokchae_in": "적채_입고량", "jeokchae_use": "적채_투입량", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고",
+                "note": "비고",
+            }
+            df_preview = df_preview.rename(columns=korean_column_map)
+
+            st.dataframe(df_preview, use_container_width=True)
+
+            st.download_button(
+                label="📥 정리된 표준 원재료 수불부 엑셀 다운로드 (.xlsx)",
+                data=excel_bytes,
+                file_name="표준_원재료_수불부(소진추적포함).xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
+        with tab3:
+            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
+            df_code_summary = pd.DataFrame(code_summary_rows)
+            if not df_code_summary.empty:
+                column_order = ["날짜", "원재료", "생성코드", "투입량(kg)", "준비량(kg)", "소진매입일(상세)", "비고"]
+                df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
+
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
+                df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
+                df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
+
+                st.dataframe(df_code_summary, use_container_width=True)
+
+                code_buffer = io.BytesIO()
+                with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
+                    df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
+
+                st.download_button(
+                    label="📥 일자별 생성 원료코드 정리표 다운로드 (.xlsx)",
+                    data=code_buffer.getvalue(),
+                    file_name="일자별_생성_원료코드_목록.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+        # --- Tab 4: 당월 수불 마감 확정 ---
+        with tab4:
+            st.subheader("🔒 당월 수불 마감 및 전월 DB 확정")
+            last_date_str = standard_rows[-1]["date"] if standard_rows else datetime.now().strftime("%Y-%m-%d")
+            default_ym = last_date_str[:7]
+            closed_ym_input = st.text_input("마감 확정 월 (YYYY-MM)", value=default_ym)
+
+            st.write("▼ **마감 후 다음 달로 이월될 잔여 롯트 미리보기**")
+            for item_k, l_list in final_lots.items():
+                st.write(f"• **{item_k}**: {len(l_list)}개 롯트 잔여")
+                for l in l_list:
+                    st.caption(f"   - 입고일: {l['yymmdd']} | 잔여량: {round(l['avail_g']/1000.0, 1)}kg")
+
+            if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
+                save_closed_lots(closed_ym_input, final_lots)
+                st.balloons()
+                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! 다음 달 수불 계산 시 반영됩니다.")
+
+    except Exception as e:
+        st.error(f"처리 중 오류가 발생했습니다: {e}")
+        st.code(traceback.format_exc())
+else:
+    with tab1:
+        st.info("👆 상단에서 1. 샐러드 생산일지 엑셀 파일과 2. 원료 매입 수불부를 업로드해 주세요.")
+    with tab2:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 자동으로 정제된 수불부가 생성됩니다.")
+    with tab3:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 일자별로 자동 생성된 원료코드 표가 출력됩니다.")
+    with tab4:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 마감 대상 잔여 롯트를 확인할 수 있습니다.")
