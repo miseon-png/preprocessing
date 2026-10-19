@@ -88,12 +88,12 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# UI 및 인쇄 스타일 설정
+# UI 및 브라우저 바로 인쇄(@media print) 스타일 설정
 # ---------------------------------------------------------
 st.markdown("""
     <style>
     @media print {
-        header, footer, .stFileUploader, button, iframe, [data-testid="stHeader"], .stAlert, .no-print, [data-testid="stToolbar"] {
+        header, footer, .stFileUploader, button, iframe, [data-testid="stHeader"], .stAlert, .no-print, [data-testid="stToolbar"], .stTabs [role="tablist"] {
             display: none !important;
         }
         [data-testid="stDataFrame"] { display: none !important; }
@@ -105,6 +105,7 @@ st.markdown("""
         .print-table {
             width: 100%; border-collapse: collapse; font-size: 10px;
             background-color: #ffffff !important; color: #000000 !important;
+            margin-bottom: 20px;
         }
         .print-table th, .print-table td {
             border: 1px solid #333333 !important; padding: 5px 4px;
@@ -204,7 +205,7 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# [수정] 수불부 A~J열 매핑 및 9/4 매입 우선 FIFO 처리
+# 수불부 A~J열 매핑 및 FIFO 연동 처리
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
@@ -230,9 +231,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        # A(0):날짜 | B(1):양상추매입 | C(2):양상추기말 | D(3):양상추투입
-        # E(4):양배추매입 | F(5):양배추기말 | G(6):양배추투입
-        # H(7):적채매입   | I(8):적채기말   | J(9):적채투입
         y_in  = parse_cell(row[1]) if len(row) > 1 else 0.0
         y_stk = parse_cell(row[2]) if len(row) > 2 else 0.0
         y_use = parse_cell(row[3]) if len(row) > 3 else 0.0
@@ -278,7 +276,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
         if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
 
-    # FIFO 소진 큐 초기화 (당월 업로드 매입분 우선)
     item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
 
     data_rows = []
@@ -520,8 +517,9 @@ if excel_file is not None:
                 st.success("✅ 소진 추적이 연동된 표준 수불부 기반으로 원료코드 대조가 완료되었습니다!")
                 st.dataframe(df_result, use_container_width=True)
 
-                html_table = df_result.to_html(classes="print-table", index=False)
-                st.markdown(f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table}</div>', unsafe_allow_html=True)
+                # 바로 인쇄용 HTML 파트
+                html_table1 = df_result.to_html(classes="print-table", index=False)
+                st.markdown(f'<div class="print-table-container"><h2>🥗 샐러드 생산일보 원료코드 대조표</h2>{html_table1}</div>', unsafe_allow_html=True)
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -534,6 +532,7 @@ if excel_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
+                st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
 
         # --- Tab 2: 표준 원재료 수불부 ---
         with tab2:
@@ -562,6 +561,10 @@ if excel_file is not None:
 
             st.dataframe(df_preview, use_container_width=True)
 
+            # 바로 인쇄용 HTML 파트 (Tab 2 전용)
+            html_table2 = df_preview.to_html(classes="print-table", index=False)
+            st.markdown(f'<div class="print-table-container"><h2>📊 표준 원재료 수불부</h2>{html_table2}</div>', unsafe_allow_html=True)
+
             st.download_button(
                 label="📥 정리된 표준 원재료 수불부 엑셀 다운로드 (.xlsx)",
                 data=excel_bytes,
@@ -569,6 +572,7 @@ if excel_file is not None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
+            st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
 
         # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
@@ -584,6 +588,10 @@ if excel_file is not None:
 
                 st.dataframe(df_code_summary, use_container_width=True)
 
+                # 바로 인쇄용 HTML 파트 (Tab 3 전용)
+                html_table3 = df_code_summary.to_html(classes="print-table", index=False)
+                st.markdown(f'<div class="print-table-container"><h2>🏷️ 일자별 생성 원료코드 목록</h2>{html_table3}</div>', unsafe_allow_html=True)
+
                 code_buffer = io.BytesIO()
                 with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
                     df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
@@ -595,6 +603,7 @@ if excel_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
+                st.caption("💡 Tip: 바로 인쇄를 원하시면 브라우저 인쇄 단축키(`Ctrl+P` 또는 `Cmd+P`)를 눌러주세요.")
 
         # --- Tab 4: 당월 수불 마감 확정 ---
         with tab4:
