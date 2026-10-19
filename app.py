@@ -138,7 +138,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [신규 추가] 전처리 공정일지 전용 HTML 렌더링 함수
+# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (디자인 개선 및 프릴 코드 반영)
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target):
     try:
@@ -155,7 +155,8 @@ def render_process_log_html(date_str, df_target):
     else:
         for i, row in enumerate(df_target.to_dict('records')):
             item = row.get("품목", "")
-            # 절단 규격 분류
+            
+            # 1. 절단 규격 분류
             if "양상추" in item or "프릴" in item:
                 cut_spec = "절단 4X4cm"
             elif "양배추" in item or "적채" in item:
@@ -163,7 +164,13 @@ def render_process_log_html(date_str, df_target):
             else:
                 cut_spec = ""
 
-            # 셀 병합(rowspan) 처리
+            # 2. 원료코드 분류 (프릴은 매입자료 기준코드 사용)
+            if "프릴" in item:
+                display_code = row.get("매입자료 기준 코드", "-")
+            else:
+                display_code = row.get("수불부 기준 코드", "-")
+
+            # 3. 셀 병합(rowspan) 처리
             prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
             check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
 
@@ -171,7 +178,7 @@ def render_process_log_html(date_str, df_target):
             <tr>
                 {prod_cell}
                 <td>{item}</td>
-                <td>{row.get("수불부 기준 코드", "-")}</td>
+                <td>{display_code}</td>
                 <td>적 / 부</td>
                 {check_cell}
                 <td>{cut_spec}</td>
@@ -229,11 +236,13 @@ def render_process_log_html(date_str, df_target):
         </table>
 
         <table class="main-table">
+            <!-- [수정] 작성일자 셀과 시간 셀 분리 -->
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
-                <td colspan="4" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp; :</td>
+                <td colspan="3" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
+                <td colspan="2" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
                 <td>작성자</td>
-                <td colspan="2" style="background-color: #fff;"></td>
+                <td style="background-color: #fff;"></td>
             </tr>
             <tr>
                 <td colspan="2" rowspan="2" class="bg-gray">원료코드<br>부여방법</td>
@@ -618,9 +627,6 @@ def parse_csv_purchase(uploaded_file):
         except Exception: continue
     return pd.DataFrame()
 
-# ---------------------------------------------------------
-# [수정] 제품명 추출 로직 반영 
-# ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
     df_csv = parse_csv_purchase(csv_file)
@@ -689,9 +695,11 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
 
-            # 제품명 추출 및 치환 로직 추가
+            # [수정] 제품명 추출 및 치환 (공백, 콤마 제거 후 정밀 비교)
             raw_product_name = str(df_s.iloc[1, 1]).strip()
-            if "샐러드 믹스 1000" in raw_product_name:
+            normalized_name = raw_product_name.replace(" ", "").replace(",", "")
+            
+            if "샐러드믹스1000" in normalized_name:
                 product_name = "브런치빈 샐러드믹스"
             else:
                 product_name = raw_product_name if raw_product_name and raw_product_name.lower() != "nan" else "-"
@@ -717,7 +725,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
                 records.append({
                     "생산일자": formatted_prod_date, 
-                    "제품명": product_name,  # 제품명 추가
+                    "제품명": product_name,
                     "prod_yymmdd": prod_yymmdd, 
                     "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
@@ -782,7 +790,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         final_rows.append(rec)
 
     df_report = pd.DataFrame(final_rows)
-    # 제품명을 날짜 다음 열로 배치
     return df_report[["생산일자", "제품명", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
 
 # ---------------------------------------------------------
@@ -793,7 +800,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 표준 원재료 수불부 정리",
     "🏷️ 원료코드 생성 및 일자별 정리",
     "🔒 당월 수불 마감 확정",
-    "📋 전처리 공정일지 출력"  # 신규 탭 추가
+    "📋 전처리 공정일지 출력"
 ])
 
 if excel_file is not None:
@@ -908,7 +915,7 @@ if excel_file is not None:
                 st.balloons()
                 st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다!")
 
-        # --- Tab 5: 전처리 공정일지 생성 (신규) ---
+        # --- Tab 5: 전처리 공정일지 생성 ---
         with tab5:
             st.subheader("📋 전처리 공정일지 자동 생성 및 출력")
             if not df_result.empty:
@@ -918,7 +925,6 @@ if excel_file is not None:
                 with col_date:
                     selected_date = st.selectbox("📅 출력할 생산일자를 선택하세요", unique_dates)
                 
-                # 선택한 날짜의 데이터만 필터링
                 df_target = df_result[df_result["생산일자"] == selected_date]
                 
                 st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 A4에 맞게 인쇄됩니다.")
