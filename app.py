@@ -281,7 +281,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             "j_in": j_in, "j_use": j_use, "j_stk": j_stk
         })
 
-    # [수정] 날짜별 중복 집계 완전 방지
+    # 날짜별 중복 집계 방지
     grouped_by_date = {}
     date_order = []
 
@@ -454,7 +454,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
     buffer = io.BytesIO()
     wb.save(buffer)
 
-    # [수정 완벽 정제] 4번째 탭 마감 이월 잔여 롯트를 실제 기말재고와 1:1 완벽 동기화
     last_row_data = data_rows[-1] if data_rows else {}
     target_stocks = {
         "양상추": last_row_data.get("yangsangchu_stock", 0.0) * 1000.0,
@@ -497,7 +496,7 @@ def parse_csv_purchase(uploaded_file):
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [Tab 1 리포트 생성 - 매입자료 거래처 정밀 매칭]
+# [1번째 탭 - 요약 시트 제외 및 준비량/투입량 셀 위치 교정]
 # ---------------------------------------------------------
 def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name):
     xls = pd.ExcelFile(excel_file)
@@ -550,8 +549,12 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         c_code = r.get("생성코드", "-")
         code_summary_map[(std_dt, item)] = c_code
 
+    # [수정] 월 요약 시트('26.09' 등) 완벽 제외
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
-    daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고")]
+    daily_sheets = [
+        s for s in xls.sheet_names 
+        if s not in exclude_sheets and not s.startswith("재고") and not re.match(r"^\d{2}\.\d{2}$", s.strip())
+    ]
 
     records = []
     for sheet in daily_sheets:
@@ -563,9 +566,14 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
 
+            # [셀 위치 교정]
+            # 품목: 1행 4, 7, 10, 13열
             items = [df_s.iloc[1, 4], df_s.iloc[1, 7], df_s.iloc[1, 10], df_s.iloc[1, 13]]
+            # 롯트: 2행 5, 8, 11, 14열
             lots = [df_s.iloc[2, 5], df_s.iloc[2, 8], df_s.iloc[2, 11], df_s.iloc[2, 14]]
-            prep_pck = [df_s.iloc[4, 5], df_s.iloc[4, 8], df_s.iloc[4, 11], df_s.iloc[4, 14]]
+            # 준비량(내포장 준비 g 수량): 3행 4, 7, 10, 13열
+            prep_pck = [df_s.iloc[3, 4], df_s.iloc[3, 7], df_s.iloc[3, 10], df_s.iloc[3, 13]]
+            # 실투입량: 5행 4, 7, 10, 13열
             actual_input = [df_s.iloc[5, 4], df_s.iloc[5, 7], df_s.iloc[5, 10], df_s.iloc[5, 13]]
 
             for item, lot, prep, act in zip(items, lots, prep_pck, actual_input):
@@ -619,7 +627,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         else:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
-        # 매입자료 기준 코드 (생산일 이하 가장 최근 유효 매입분)
+        # 매입자료 기준 코드
         code_purchase = "-"
         if has_csv:
             valid_p = [pr for pr in purchase_records if pr["item"] == lookup_item and pr["std_date"] <= prod_date]
