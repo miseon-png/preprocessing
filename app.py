@@ -166,101 +166,85 @@ def find_stock_sheet_name(xls):
     return xls.sheet_names[0]
 
 # ---------------------------------------------------------
-# [수정] 엑셀 행 순서 파싱 및 날짜별 병합 누적 로직 완벽 보완
+# [핵심 수정] 엑셀 열 인덱스(0~9) 정밀 파싱 로직
 # ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     xls = pd.ExcelFile(excel_file)
     stock_sheet = find_stock_sheet_name(xls)
+    # header=None으로 읽어 첫 번째 헤더 행 오염 방지
     df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
     def parse_num(val):
         if pd.isna(val): return 0.0
         try:
+            # 숫식 및 콤마 제거 후 순수 float 변환
             c = re.sub(r"[^\d.]", "", str(val))
             return float(c) if c else 0.0
         except Exception: return 0.0
 
-    # 1단계: 순서 보장 날짜별 데이터 수집
-    raw_parsed_list = []
+    grouped_by_date = {}
 
     for idx, row in df_raw.iterrows():
         if len(row) == 0: continue
         raw_date = row.iloc[0]
         
+        # 헤더 문구 스킵
         if pd.isna(raw_date) or str(raw_date).strip() == "" or "날짜" in str(raw_date):
             continue
 
         _, yymmdd, _ = extract_yymmdd_and_mmdd(raw_date)
         formatted_date = f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:]}"
 
-        # B:매입(1), C:기말재고(2), D:투입(3)
+        # 엑셀 열 인덱스 타겟팅
+        # A(0):날짜 | B(1):양상추매입 | C(2):양상추기말재고 | D(3):양상추투입
+        # E(4):양배추매입 | F(5):양배추기말재고 | G(6):양배추투입
+        # H(7):적채매입   | I(8):적채기말재고   | J(9):적채투입
         y_in  = parse_num(row.iloc[1]) if len(row) > 1 else 0.0
         y_stk = parse_num(row.iloc[2]) if len(row) > 2 else 0.0
         y_use = parse_num(row.iloc[3]) if len(row) > 3 else 0.0
 
-        # E:매입(4), F:기말재고(5), G:투입(6)
         b_in  = parse_num(row.iloc[4]) if len(row) > 4 else 0.0
         b_stk = parse_num(row.iloc[5]) if len(row) > 5 else 0.0
         b_use = parse_num(row.iloc[6]) if len(row) > 6 else 0.0
 
-        # H:매입(7), I:기말재고(8), J:투입(9)
         j_in  = parse_num(row.iloc[7]) if len(row) > 7 else 0.0
         j_stk = parse_num(row.iloc[8]) if len(row) > 8 else 0.0
         j_use = parse_num(row.iloc[9]) if len(row) > 9 else 0.0
 
-        raw_parsed_list.append({
-            "date": formatted_date, "yymmdd": yymmdd,
-            "y_in": y_in, "y_use": y_use, "y_stk": y_stk,
-            "b_in": b_in, "b_use": b_use, "b_stk": b_stk,
-            "j_in": j_in, "j_use": j_use, "j_stk": j_stk
-        })
-
-    # 2단계: 동일 날짜 행 통합 (합산 처리)
-    grouped_by_date = {}
-    date_order = []
-
-    for item in raw_parsed_list:
-        dt = item["date"]
-        if dt not in grouped_by_date:
-            grouped_by_date[dt] = {
-                "date": dt, "yymmdd": item["yymmdd"],
+        if formatted_date not in grouped_by_date:
+            grouped_by_date[formatted_date] = {
+                "date": formatted_date, "yymmdd": yymmdd,
                 "y_in": 0.0, "y_use": 0.0, "y_stk": 0.0,
                 "b_in": 0.0, "b_use": 0.0, "b_stk": 0.0,
                 "j_in": 0.0, "j_use": 0.0, "j_stk": 0.0
             }
-            date_order.append(dt)
 
-        grouped_by_date[dt]["y_in"] += item["y_in"]
-        grouped_by_date[dt]["b_in"] += item["b_in"]
-        grouped_by_date[dt]["j_in"] += item["j_in"]
+        grouped_by_date[formatted_date]["y_in"] += y_in
+        grouped_by_date[formatted_date]["b_in"] += b_in
+        grouped_by_date[formatted_date]["j_in"] += j_in
 
-        grouped_by_date[dt]["y_use"] += item["y_use"]
-        grouped_by_date[dt]["b_use"] += item["b_use"]
-        grouped_by_date[dt]["j_use"] += item["j_use"]
+        # 정확한 투입량 합산
+        grouped_by_date[formatted_date]["y_use"] += y_use
+        grouped_by_date[formatted_date]["b_use"] += b_use
+        grouped_by_date[formatted_date]["j_use"] += j_use
 
-        # 기말재고가 있는 행의 수량 보존
-        if item["y_stk"] > 0: grouped_by_date[dt]["y_stk"] = item["y_stk"]
-        if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
-        if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
+        if y_stk > 0: grouped_by_date[formatted_date]["y_stk"] = y_stk
+        if b_stk > 0: grouped_by_date[formatted_date]["b_stk"] = b_stk
+        if j_stk > 0: grouped_by_date[formatted_date]["j_stk"] = j_stk
 
-    # 3단계: FIFO 소진 큐 생성 (DB 매입 우선)
-    _, db_lots = get_latest_closed_lots()
-    item_queues = {
-        "yangsangchu": copy.deepcopy(db_lots["양상추"]),
-        "yangbaechu": copy.deepcopy(db_lots["양배추"]),
-        "jeokchae": copy.deepcopy(db_lots["적채"])
-    }
+    # --- FIFO 소진 큐 생성 ---
+    item_queues = {"yangsangchu": [], "yangbaechu": [], "jeokchae": []}
+    sorted_dates = sorted(grouped_by_date.keys())
 
     data_rows = []
     generated_code_rows = []
     target_items_order = ["양상추", "양배추", "적채"]
 
-    for dt in date_order:
+    for dt in sorted_dates:
         g = grouped_by_date[dt]
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        # 당일 입고 롯트 FIFO 큐에 등록
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
@@ -396,7 +380,7 @@ if excel_file is not None:
         excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
 
         with tab1:
-            st.subheader("📋 표준 원재료 수불부 (수불부 투입량 정확 반영)")
+            st.subheader("📋 표준 원재료 수불부 (엑셀 투입량 데이터 100% 반영)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns: df_preview = df_preview.drop(columns=["yymmdd"])
 
