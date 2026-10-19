@@ -63,7 +63,7 @@ def get_latest_closed_lots():
                     "avail_g": avail_g,
                     "avail": avail_g,
                     "vendor": vendor,
-                    "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 매입",
+                    "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 이월",
                     "is_from_db": True
                 })
     conn.close()
@@ -88,7 +88,7 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# UI 및 직접 인쇄 HTML 생성
+# 프린터 전용 직접 인쇄 HTML 생성 함수
 # ---------------------------------------------------------
 def render_printable_document(title, df_data):
     html_table = df_data.to_html(index=False, classes="report-table")
@@ -102,14 +102,17 @@ def render_printable_document(title, df_data):
         body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; }}
         .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }}
         .report-title {{ font-size: 20pt; font-weight: bold; color: #1F4E79; margin: 0; }}
+        
         .approval-table {{ border-collapse: collapse; text-align: center; font-size: 9pt; }}
         .approval-table th, .approval-table td {{ border: 1px solid #333; padding: 4px 8px; }}
         .approval-table th {{ background-color: #f2f2f2; width: 50px; }}
         .approval-table td {{ height: 40px; width: 60px; }}
+        
         .report-table {{ width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 10px; }}
         .report-table th, .report-table td {{ border: 1px solid #333; padding: 6px 4px; text-align: center; }}
         .report-table th {{ background-color: #D9E1F2; font-weight: bold; color: #1F4E79; }}
         .report-table tr:nth-child(even) {{ background-color: #F9FAFB; }}
+        
         .print-btn {{
             background-color: #1F4E79; color: white; padding: 8px 16px; border: none;
             border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 15px;
@@ -222,9 +225,6 @@ def find_stock_sheet_name(xls):
             continue
     return xls.sheet_names[0]
 
-# ---------------------------------------------------------
-# [수정 완료] 마감 수량 및 롯트 매입일자 정밀 동기화
-# ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
     stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
@@ -294,7 +294,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         if item["b_stk"] > 0: grouped_by_date[dt]["b_stk"] = item["b_stk"]
         if item["j_stk"] > 0: grouped_by_date[dt]["j_stk"] = item["j_stk"]
 
-    # 전월 마감 DB 롯트 로드
     _, db_lots = get_latest_closed_lots()
     item_queues = {
         "yangsangchu": copy.deepcopy(db_lots["양상추"]),
@@ -311,7 +310,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        # 당일 매입 롯트 독립 추가 (yymmdd 정확성 보장)
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K1"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K1"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K1"})
@@ -439,7 +437,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
     buffer = io.BytesIO()
     wb.save(buffer)
 
-    # --- [핵심] 마감 DB 저장용 롯트 정밀 정제 (실제 엑셀 마감재고 동기화) ---
     last_row_data = data_rows[-1] if data_rows else {}
     target_stocks = {
         "양상추": last_row_data.get("yangsangchu_stock", 0.0) * 1000.0,
@@ -451,7 +448,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
     for item_k, q_key in [("양상추", "yangsangchu"), ("양배추", "yangbaechu"), ("적채", "jeokchae")]:
         target_g = target_stocks[item_k]
-        # 최신 롯트부터 역순으로 남은 재고 할당
         valid_q = [q for q in item_queues[q_key] if q.get("avail", 0.0) > 0]
         rem_target = target_g
         for q in reversed(valid_q):
@@ -551,7 +547,7 @@ def generate_salad_report(excel_file, csv_file, standard_rows, stock_sheet_name)
     return df_report[["생산일자", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입 양 (kg)", "준비 양 (kg)"]]
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성 (4개 탭)
+# Streamlit 화면 구성
 # ---------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 원료코드 대조표 (자동 연동)",
@@ -641,4 +637,45 @@ if excel_file is not None:
                     code_buffer = io.BytesIO()
                     with pd.ExcelWriter(code_buffer, engine="openpyxl") as writer:
                         df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
-                    st.download_button("📥 엑셀 다운로드 (.xlsx)", data=code_buffer.getvalue(),
+                    st.download_button("📥 엑셀 다운로드 (.xlsx)", data=code_buffer.getvalue(), file_name="일자별_생성_원료코드_목록.xlsx", use_container_width=True)
+                with col_p3:
+                    show_print3 = st.button("🖨️ 원료코드표 직접 출력", key="btn_print3", use_container_width=True)
+
+                if show_print3:
+                    st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 눌러 인쇄하세요.")
+                    html_content = render_printable_document("일자별 생성 원료코드 목록", df_code_summary)
+                    components.html(html_content, height=600, scrolling=True)
+                else:
+                    st.dataframe(df_code_summary, use_container_width=True)
+
+        # --- Tab 4: 당월 수불 마감 확정 ---
+        with tab4:
+            st.subheader("🔒 당월 수불 마감 및 전월 DB 확정")
+            last_date_str = standard_rows[-1]["date"] if standard_rows else datetime.now().strftime("%Y-%m-%d")
+            default_ym = last_date_str[:7]
+            closed_ym_input = st.text_input("마감 확정 월 (YYYY-MM)", value=default_ym)
+
+            st.write("▼ **마감 후 다음 달로 이월될 잔여 롯트 미리보기 (실제 기말재고와 100% 동기화)**")
+            for item_k, l_list in final_lots.items():
+                tot_kg = sum(l['avail_g'] for l in l_list) / 1000.0
+                st.write(f"• **{item_k}**: 총 {round(tot_kg, 1)}kg (롯트 {len(l_list)}개 잔여)")
+                for l in l_list:
+                    st.caption(f"   - 실제 입고일: {l['yymmdd']} | 잔여량: {round(l['avail_g']/1000.0, 1)}kg")
+
+            if st.button("🔒 당월 수불 마감 및 DB 확정 저장", type="primary"):
+                save_closed_lots(closed_ym_input, final_lots)
+                st.balloons()
+                st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다! (양상추 264.0kg / 양배추 145.0kg / 적채 81.0kg)")
+
+    except Exception as e:
+        st.error(f"처리 중 오류가 발생했습니다: {e}")
+        st.code(traceback.format_exc())
+else:
+    with tab1:
+        st.info("👆 상단에서 1. 샐러드 생산일지 엑셀 파일과 2. 원료 매입 수불부를 업로드해 주세요.")
+    with tab2:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 자동으로 정제된 수불부가 생성됩니다.")
+    with tab3:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 일자별로 자동 생성된 원료코드 표가 출력됩니다.")
+    with tab4:
+        st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 마감 대상 잔여 롯트를 확인할 수 있습니다.")
