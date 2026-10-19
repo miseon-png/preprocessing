@@ -103,13 +103,11 @@ def render_printable_document(title, df_data):
         .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }}
         .report-title {{ font-size: 20pt; font-weight: bold; color: #1F4E79; margin: 0; }}
         
-        /* 결재란 서식 */
         .approval-table {{ border-collapse: collapse; text-align: center; font-size: 9pt; }}
         .approval-table th, .approval-table td {{ border: 1px solid #333; padding: 4px 8px; }}
         .approval-table th {{ background-color: #f2f2f2; width: 50px; }}
         .approval-table td {{ height: 40px; width: 60px; }}
         
-        /* 본문 데이터 테이블 서식 */
         .report-table {{ width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 10px; }}
         .report-table th, .report-table td {{ border: 1px solid #333; padding: 6px 4px; text-align: center; }}
         .report-table th {{ background-color: #D9E1F2; font-weight: bold; color: #1F4E79; }}
@@ -143,7 +141,7 @@ def render_printable_document(title, df_data):
 st.title("🥗 샐러드 생산일보 원료코드 대조 및 수불부 연동 System")
 
 # ---------------------------------------------------------
-# 사이드바
+# 사이드바: 전월 마감 DB 관리
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("🗄️ 마스터 수불 DB 관리")
@@ -227,6 +225,9 @@ def find_stock_sheet_name(xls):
             continue
     return xls.sheet_names[0]
 
+# ---------------------------------------------------------
+# [g -> kg 단위 변환 보완] 수불부 변환 로직
+# ---------------------------------------------------------
 def parse_and_convert_to_standard_ledger(excel_file):
     wb_in = openpyxl.load_workbook(excel_file, data_only=True)
     stock_sheet = find_stock_sheet_name(pd.ExcelFile(excel_file))
@@ -341,11 +342,21 @@ def parse_and_convert_to_standard_ledger(excel_file):
 
         note = "휴무" if (g["y_in"] == 0 and g["y_use"] == 0 and g["b_in"] == 0 and g["b_use"] == 0 and g["j_in"] == 0 and g["j_use"] == 0) else ""
 
+        # 화면 및 출력 표를 위해 수량을 g에서 kg(소수점 1자리) 단위로 환산
         row_data = {
             "date": dt, "yymmdd": yymmdd,
-            "yangsangchu_in": g["y_in"], "yangsangchu_use": g["y_use"], "yangsangchu_source": y_src, "yangsangchu_stock": g["y_stk"],
-            "yangbaechu_in": g["b_in"], "yangbaechu_use": g["b_use"], "yangbaechu_source": b_src, "yangbaechu_stock": g["b_stk"],
-            "jeokchae_in": g["j_in"], "jeokchae_use": g["j_use"], "jeokchae_source": j_src, "jeokchae_stock": g["j_stk"],
+            "yangsangchu_in": round(g["y_in"] / 1000.0, 1), 
+            "yangsangchu_use": round(g["y_use"] / 1000.0, 1), 
+            "yangsangchu_source": y_src, 
+            "yangsangchu_stock": round(g["y_stk"] / 1000.0, 1),
+            "yangbaechu_in": round(g["b_in"] / 1000.0, 1), 
+            "yangbaechu_use": round(g["b_use"] / 1000.0, 1), 
+            "yangbaechu_source": b_src, 
+            "yangbaechu_stock": round(g["b_stk"] / 1000.0, 1),
+            "jeokchae_in": round(g["j_in"] / 1000.0, 1), 
+            "jeokchae_use": round(g["j_use"] / 1000.0, 1), 
+            "jeokchae_source": j_src, 
+            "jeokchae_stock": round(g["j_stk"] / 1000.0, 1),
             "note": note
         }
         data_rows.append(row_data)
@@ -367,7 +378,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
     ws.title = "원재료 수불부"
     ws.views.sheetView[0].showGridLines = True
     ws.merge_cells("A1:Q1")
-    ws["A1"] = "원재료 수불부 (Raw Material Inventory Ledger - FIFO 롯트 추적)"
+    ws["A1"] = "원재료 수불부 (Raw Material Inventory Ledger - kg 단위)"
     ws["A1"].font = Font(name="맑은 고딕", size=16, bold=True, color="1F4E79")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
 
@@ -377,7 +388,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
     thin_border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
                          top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
 
-    headers_main = [("A2:A3", "일자"), ("B2:F2", "양상추"), ("G2:K2", "양배추"), ("L2:P2", "적채"), ("Q2:Q3", "비고")]
+    headers_main = [("A2:A3", "일자"), ("B2:F2", "양상추(kg)"), ("G2:K2", "양배추(kg)"), ("L2:P2", "적채(kg)"), ("Q2:Q3", "비고")]
     for cell_range, title in headers_main:
         ws.merge_cells(cell_range)
         ws[cell_range.split(":")[0]] = title
@@ -406,7 +417,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         for start_col, in_val, use_val, source_str, stock_val in items_map:
             end_col_let = get_column_letter(start_col + 4)
             if r_idx == start_row:
-                ws.cell(row=r_idx, column=start_col, value=stock_val + use_val - in_val)
+                ws.cell(row=r_idx, column=start_col, value=round(stock_val + use_val - in_val, 1))
             else:
                 ws.cell(row=r_idx, column=start_col, value=f"={end_col_let}{r_idx-1}")
 
@@ -419,7 +430,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.font, cell.border = regular_font, thin_border
             if c_idx in [2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16]:
-                cell.number_format = "#,##0"
+                cell.number_format = "#,##0.0"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
     buffer = io.BytesIO()
@@ -552,9 +563,9 @@ if excel_file is not None:
                 else:
                     st.dataframe(df_result, use_container_width=True)
 
-        # --- Tab 2: 표준 원재료 수불부 ---
+        # --- Tab 2: 표준 원재료 수불부 (kg 단위 적용) ---
         with tab2:
-            st.subheader("📋 표준 원재료 수불부")
+            st.subheader("📋 표준 원재료 수불부 (kg 단위 변환 표기)")
             df_preview = pd.DataFrame(standard_rows)
             if "yymmdd" in df_preview.columns:
                 df_preview = df_preview.drop(columns=["yymmdd"])
@@ -570,29 +581,29 @@ if excel_file is not None:
 
             korean_column_map = {
                 "date": "일자",
-                "yangsangchu_in": "양상추_입고량", "yangsangchu_use": "양상추_투입량", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고",
-                "yangbaechu_in": "양배추_입고량", "yangbaechu_use": "양배추_투입량", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고",
-                "jeokchae_in": "적채_입고량", "jeokchae_use": "적채_투입량", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고",
+                "yangsangchu_in": "양상추_입고량(kg)", "yangsangchu_use": "양상추_투입량(kg)", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고(kg)",
+                "yangbaechu_in": "양배추_입고량(kg)", "yangbaechu_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
+                "jeokchae_in": "적채_입고량(kg)", "jeokchae_use": "적채_투입량(kg)", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고(kg)",
                 "note": "비고",
             }
             df_preview = df_preview.rename(columns=korean_column_map)
 
             col_d2, col_p2 = st.columns([3, 1])
             with col_d2:
-                st.download_button("📥 엑셀 다운로드 (.xlsx)", data=excel_bytes, file_name="표준_원재료_수불부.xlsx", use_container_width=True)
+                st.download_button("📥 엑셀 다운로드 (.xlsx)", data=excel_bytes, file_name="표준_원재료_수불부(kg).xlsx", use_container_width=True)
             with col_p2:
                 show_print2 = st.button("🖨️ 수불부 직접 출력", key="btn_print2", use_container_width=True)
 
             if show_print2:
                 st.info("💡 아래 출력 미리보기 화면의 [🖨️ 이 문서 프린터로 바로 출력하기] 버튼을 누르면 결재란이 포함된 공식 수불부가 출력됩니다.")
-                html_content = render_printable_document("표준 원재료 수불부 (소진 추적 포함)", df_preview)
+                html_content = render_printable_document("표준 원재료 수불부 (단위: kg)", df_preview)
                 components.html(html_content, height=600, scrolling=True)
             else:
                 st.dataframe(df_preview, use_container_width=True)
 
         # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
-            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 목록")
+            st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
             df_code_summary = pd.DataFrame(code_summary_rows)
             if not df_code_summary.empty:
                 column_order = ["날짜", "원재료", "생성코드", "투입량(kg)", "준비량(kg)", "소진매입일(상세)", "비고"]
