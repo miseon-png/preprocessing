@@ -88,10 +88,9 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# [신규] 원클릭 즉시 인쇄/PDF 저장 버튼 생성 함수
+# [개선] 새 창 팝업 없이 즉시 인쇄/PDF 저장 버튼 생성 함수 (Hidden Iframe 방식)
 # ---------------------------------------------------------
 def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력 / PDF"):
-    # HTML 문자열을 base64로 인코딩하여 스크립트 오류 원천 차단
     b64 = base64.b64encode(html_payload.encode('utf-8')).decode('utf-8')
     button_html = f"""
     <!DOCTYPE html>
@@ -106,13 +105,11 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
             width: 100%; cursor: pointer; font-size: 16px; box-sizing: border-box;
             transition: all 0.2s ease;
         }}
-        /* 다크모드 대응 */
         @media (prefers-color-scheme: dark) {{
             body {{ background-color: transparent; }}
             .btn {{ background-color: #262730; color: #FAFAFA; border: 1px solid rgba(250, 250, 250, 0.2); }}
             .btn:hover {{ border-color: #FF4B4B; color: #FF4B4B; }}
         }}
-        /* 라이트모드 대응 */
         @media (prefers-color-scheme: light) {{
             body {{ background-color: transparent; }}
             .btn {{ background-color: #FFFFFF; color: #31333F; border: 1px solid rgba(49, 51, 63, 0.2); }}
@@ -120,19 +117,31 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
         }}
     </style>
     <script>
-        function openPrintWindow() {{
+        function directPrint() {{
             try {{
                 var b64 = "{b64}";
                 var decoded = decodeURIComponent(escape(window.atob(b64)));
-                var win = window.open('', '_blank');
-                if (win) {{
-                    win.document.write(decoded);
-                    win.document.close();
-                    win.focus();
-                    setTimeout(function() {{ win.print(); }}, 500);
-                }} else {{
-                    alert("팝업이 차단되었습니다. 브라우저 우측 상단에서 팝업 차단을 해제해주세요.");
-                }}
+                
+                // 화면에 보이지 않는 iframe을 생성하여 문서 삽입
+                var iframe = document.createElement('iframe');
+                iframe.style.position = 'absolute';
+                iframe.style.width = '0px';
+                iframe.style.height = '0px';
+                iframe.style.border = 'none';
+                document.body.appendChild(iframe);
+                
+                var doc = iframe.contentWindow.document;
+                doc.open();
+                doc.write(decoded);
+                doc.close();
+                
+                iframe.contentWindow.focus();
+                
+                // 문서가 로드될 시간을 짧게 준 뒤 브라우저 인쇄창 호출
+                setTimeout(function() {{ 
+                    iframe.contentWindow.print(); 
+                }}, 500);
+                
             }} catch (e) {{
                 alert("인쇄 화면을 여는 중 오류가 발생했습니다.");
             }}
@@ -140,7 +149,7 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
     </script>
     </head>
     <body>
-        <button class="btn" onclick="openPrintWindow()">{button_label}</button>
+        <button class="btn" onclick="directPrint()">{button_label}</button>
     </body>
     </html>
     """
@@ -172,19 +181,13 @@ def render_printable_document(title, df_data):
         .report-table th {{ background-color: #D9E1F2; font-weight: bold; color: #1F4E79; }}
         .report-table tr:nth-child(even) {{ background-color: #F9FAFB; }}
         
-        .print-btn {{
-            background-color: #1F4E79; color: white; padding: 10px 20px; border: none;
-            border-radius: 4px; font-weight: bold; font-size: 11pt; cursor: pointer; margin-bottom: 15px;
-        }}
         @media print {{
-            .print-btn {{ display: none !important; }}
             body {{ padding: 0; margin: 0; }}
             @page {{ size: A4 portrait; margin: 15mm; }}
         }}
     </style>
     </head>
     <body>
-        <button class="print-btn" onclick="window.print()">🖨️ 인쇄 메뉴 다시 열기</button>
         <div class="header-container">
             <h1 class="report-title">{title}</h1>
             <table class="approval-table">
@@ -214,8 +217,12 @@ def render_process_log_html(date_str, df_target):
     if row_count == 0:
         rows_html = "<tr><td colspan='9' style='text-align:center; padding:15px;'>해당 일자의 데이터가 없습니다.</td></tr>"
     else:
+        current_product = None
         for i, row in enumerate(df_target.to_dict('records')):
             item = row.get("품목", "")
+            prod_name = row.get("제품명", "")
+            
+            # 절단 규격 분류
             if "양상추" in item or "프릴" in item:
                 cut_spec = "절단 4X4cm"
             elif "양배추" in item or "적채" in item:
@@ -223,14 +230,23 @@ def render_process_log_html(date_str, df_target):
             else:
                 cut_spec = ""
 
+            # 원료코드 분류 (프릴은 매입자료 기준코드 사용)
             if "프릴" in item:
                 display_code = row.get("매입자료 기준 코드", "-")
             else:
                 display_code = row.get("수불부 기준 코드", "-")
 
-            prod_cell = f'<td rowspan="{row_count}"><b>{row.get("제품명", "")}</b></td>' if i == 0 else ""
-            check_cell = f'<td rowspan="{row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>' if i == 0 else ""
+            # 다중 제품 rowspan 동적 그룹핑
+            if prod_name != current_product:
+                current_product = prod_name
+                prod_row_count = len(df_target[df_target['제품명'] == prod_name])
+                prod_cell = f'<td rowspan="{prod_row_count}"><b>{prod_name}</b></td>'
+                check_cell = f'<td rowspan="{prod_row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>'
+            else:
+                prod_cell = ""
+                check_cell = ""
 
+            # 투입량(후) 열은 빈칸
             rows_html += f"""
             <tr>
                 {prod_cell}
@@ -245,6 +261,7 @@ def render_process_log_html(date_str, df_target):
             </tr>
             """
     
+    # 남은 여백 줄 추가
     for _ in range(5):
         rows_html += "<tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>"
 
@@ -256,12 +273,7 @@ def render_process_log_html(date_str, df_target):
     <title>전처리 공정일지</title>
     <style>
         body {{ font-family: '맑은 고딕', sans-serif; padding: 20px; color: #000; background-color: #fff; margin: 0 auto; max-width: 1200px; }}
-        .print-btn {{
-            background-color: #1F4E79; color: white; padding: 10px 20px; border: none;
-            border-radius: 4px; font-weight: bold; font-size: 11pt; cursor: pointer; margin-bottom: 15px;
-        }}
         @media print {{
-            .print-btn {{ display: none !important; }}
             body {{ padding: 0; margin: 0; max-width: none; }}
             @page {{ size: A4 landscape; margin: 15mm; }}
         }}
@@ -279,8 +291,6 @@ def render_process_log_html(date_str, df_target):
     </style>
     </head>
     <body>
-        <button class="print-btn" onclick="window.print()">🖨️ 인쇄 메뉴 다시 열기</button>
-        
         <table class="header-table">
             <tr>
                 <td class="title">전처리 공정일지</td>
@@ -747,15 +757,12 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
             df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
             if df_s.shape[0] < 5 or df_s.shape[1] < 14: continue
             
-            # 날짜 추출
             prod_date = df_s.iloc[1, 0]
             if pd.isna(prod_date) or "작업" in str(prod_date):
                 prod_date = df_s.iloc[0, 0]
 
-            # 제품명 추출 및 치환
             raw_product_name = str(df_s.iloc[1, 1]).strip()
             normalized_name = raw_product_name.replace(" ", "").replace(",", "")
-            
             if "샐러드믹스1000" in normalized_name:
                 product_name = "브런치빈 샐러드믹스"
             else:
@@ -776,8 +783,8 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
                 lot_str = str(lot).strip() if pd.notna(lot) else ""
                 has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
+                
                 _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
-
                 formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
 
                 records.append({
@@ -789,6 +796,31 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "실투입량(전)": round(a_val / 1000.0, 1), "준비양(후)": round(p_val / 1000.0, 1),
                     "has_lot": has_lot,
                 })
+                
+            # [수정] 컷레터스 추출 및 수불부 자동코드 강제 부여
+            if df_s.shape[0] > 7 and df_s.shape[1] > 4:
+                raw_prod2 = str(df_s.iloc[7, 0]).strip()
+                norm_prod2 = raw_prod2.replace(" ", "")
+                if "컷레터스" in norm_prod2:
+                    act2_raw = df_s.iloc[7, 4]
+                    try:
+                        act2_val = float(act2_raw) if pd.notna(act2_raw) else 0.0
+                    except:
+                        act2_val = 0.0
+                        
+                    if act2_val > 0:
+                        records.append({
+                            "생산일자": formatted_prod_date, 
+                            "제품명": "컷레터스",
+                            "prod_yymmdd": prod_yymmdd, 
+                            "품목": "양상추",
+                            "작업일지_롯트": "수불부코드자동적용", 
+                            "act_g": act2_val,
+                            "실투입량(전)": round(act2_val / 1000.0, 1), 
+                            "준비양(후)": 0.0,
+                            "has_lot": True, 
+                        })
+
         except Exception: continue
 
     if not records: return pd.DataFrame()
@@ -809,14 +841,9 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
         p = prefix_map.get(lookup_item, prefix_map.get("프릴" if is_frill else "양상추", "X"))
 
-        if has_lot:
-            _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
-            code_worklog = f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
-        else: code_worklog = "없음"
-
-        if is_frill:
-            code_subul = "-"
-        else:
+        # 소진 매입재고 기반 일자별 원료코드(수불부 기준 코드) 추출
+        code_subul = "-"
+        if not is_frill:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
         code_purchase = "-"
@@ -826,22 +853,33 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 valid_p.sort(key=lambda x: x["std_date"], reverse=True)
                 code_purchase = valid_p[0]["code"]
 
-        if is_frill:
-            if code_worklog != "없음" and code_purchase != "-" and (code_worklog in code_purchase or code_worklog.split("-")[0] in code_purchase):
-                is_match = "일치"
-            elif code_worklog == "없음":
-                is_match = "불일치(작업일지 미기재)"
-            else:
-                is_match = "불일치(수불부 대상 제외 품목)"
+        # [수정] 컷레터스의 경우 수기 로트가 없으므로 수불부 생성 코드를 그대로 작업일지 코드로 강제 부여
+        if rec["제품명"] == "컷레터스":
+            code_worklog = code_subul
+            is_match = "일치(수불부 자동부여)"
         else:
-            if code_worklog != "없음" and code_subul != "-" and code_worklog in code_subul:
-                is_match = "일치"
-            elif code_worklog == "없음":
-                is_match = "불일치(작업일지 미기재)"
-            elif code_subul == "-":
-                is_match = "불일치(수불부 소진 미발생)"
+            if has_lot:
+                _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot)
+                code_worklog = f"{p}{yymmdd_worklog}-K01" if yymmdd_worklog else "없음"
+            else: 
+                code_worklog = "없음"
+
+            if is_frill:
+                if code_worklog != "없음" and code_purchase != "-" and (code_worklog in code_purchase or code_worklog.split("-")[0] in code_purchase):
+                    is_match = "일치"
+                elif code_worklog == "없음":
+                    is_match = "불일치(작업일지 미기재)"
+                else:
+                    is_match = "불일치(수불부 대상 제외 품목)"
             else:
-                is_match = "불일치(혼합/추측)"
+                if code_worklog != "없음" and code_subul != "-" and code_worklog in code_subul:
+                    is_match = "일치"
+                elif code_worklog == "없음":
+                    is_match = "불일치(작업일지 미기재)"
+                elif code_subul == "-":
+                    is_match = "불일치(수불부 소진 미발생)"
+                else:
+                    is_match = "불일치(혼합/추측)"
 
         rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
         final_rows.append(rec)
@@ -878,7 +916,6 @@ if excel_file is not None:
                         df_result.to_excel(writer, index=False, sheet_name="원료코드_대조표")
                     st.download_button("📥 엑셀 다운로드 (.xlsx)", data=buffer.getvalue(), file_name="원료코드_대조표.xlsx", use_container_width=True)
                 with col_p:
-                    # [수정] 원클릭 바로 출력 버튼 사용
                     html_content = render_printable_document("샐러드 생산일보 원료코드 대조표 (단위: kg)", df_result)
                     render_direct_print_button(html_content, "🖨️ 바로 출력 / PDF 저장")
                 
@@ -913,7 +950,6 @@ if excel_file is not None:
             with col_d2:
                 st.download_button("📥 엑셀 다운로드 (.xlsx)", data=excel_bytes, file_name="표준_원재료_수불부(kg).xlsx", use_container_width=True)
             with col_p2:
-                # [수정] 원클릭 바로 출력 버튼 사용
                 html_content = render_printable_document("표준 원재료 수불부 (단위: kg)", df_preview)
                 render_direct_print_button(html_content, "🖨️ 바로 출력 / PDF 저장")
             
@@ -938,7 +974,6 @@ if excel_file is not None:
                         df_code_summary.to_excel(writer, index=False, sheet_name="일자별_원료코드_생성")
                     st.download_button("📥 엑셀 다운로드 (.xlsx)", data=code_buffer.getvalue(), file_name="일자별_생성_원료코드_목록.xlsx", use_container_width=True)
                 with col_p3:
-                    # [수정] 원클릭 바로 출력 버튼 사용
                     html_content = render_printable_document("일자별 생성 원료코드 목록", df_code_summary)
                     render_direct_print_button(html_content, "🖨️ 바로 출력 / PDF 저장")
 
@@ -973,17 +1008,19 @@ if excel_file is not None:
                 with col_date:
                     selected_date = st.selectbox("📅 출력할 생산일자를 선택하세요", unique_dates)
                 
-                df_target = df_result[df_result["생산일자"] == selected_date]
+                df_target = df_result[df_result["생산일자"] == selected_date].copy()
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
+                df_target["_item_sort"] = df_target["품목"].map(lambda x: item_priority.get(x, 99))
+                df_target = df_target.sort_values(by=["제품명", "_item_sort"])
+                
                 html_process_log = render_process_log_html(selected_date, df_target)
                 
                 col_p_btn, _ = st.columns([1, 3])
                 with col_p_btn:
-                    # [수정] 원클릭 바로 출력 버튼 사용
-                    render_direct_print_button(html_process_log, "🖨️ 전처리 공정일지 바로 출력 / PDF")
+                    render_direct_print_button(html_process_log, "🖨️ 공정일지 바로 출력 / PDF")
                 
-                st.info("💡 위 [바로 출력 / PDF] 버튼을 누르면 팝업창이 열리며 즉시 인쇄 화면이 나타납니다. (가로 방향 인쇄 권장)")
+                st.info("💡 위 [바로 출력 / PDF] 버튼을 누르면 인쇄 대화상자가 즉시 나타납니다. (가로 방향 인쇄 권장)")
                 
-                # 웹상에서도 미리볼 수 있도록 HTML 표시 유지
                 components.html(html_process_log, height=800, scrolling=True)
             else:
                 st.warning("데이터를 불러오지 못했습니다. 업로드한 파일을 확인해주세요.")
