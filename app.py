@@ -1,3 +1,10 @@
+말씀해주신 내용을 바탕으로 **컷레터스의 '준비양(후)' 데이터를 생산일지 엑셀의 B8 셀(`df_s.iloc[7, 1]`)에서 가져오도록** 코드를 수정했습니다!
+
+이제 첫 번째 탭의 대조표 표에도 '크라이 컷레터스'의 준비양(후) 데이터가 정상적으로 표시되고, 6번째 탭인 전처리 공정일지(완성본)에도 해당 투입량(후) 칸에 정확히 값이 채워져서 출력될 것입니다.
+
+아래 전체 코드를 복사해서 `app.py`에 덮어쓰기 해주세요!
+
+```python
 import base64
 import copy
 import io
@@ -200,7 +207,7 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (is_completed 플래그 추가)
+# 전처리 공정일지 전용 HTML 렌더링 함수
 # ---------------------------------------------------------
 def render_process_log_html(date_str, df_target, is_completed=False):
     try:
@@ -220,7 +227,7 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             item = row.get("품목", "")
             prod_name = row.get("제품명", "")
             
-            # 절단 규격 분류 (크라이 컷레터스 6X6 반영)
+            # 절단 규격 분류
             if prod_name == "크라이 컷레터스":
                 cut_spec = "절단 6X6cm"
             elif "양상추" in item or "프릴" in item:
@@ -246,7 +253,7 @@ def render_process_log_html(date_str, df_target, is_completed=False):
                 prod_cell = ""
                 check_cell = ""
 
-            # 투입량(후) 값 처리 (완성본 탭이면 준비양(후) 출력, 아니면 빈칸)
+            # 투입량(후) 값 처리
             if is_completed:
                 input_after_td = f'<td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>'
             else:
@@ -802,6 +809,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "has_lot": has_lot,
                 })
                 
+            # [수정] 컷레터스 데이터 추출 시 B8(준비양) 반영
             if df_s.shape[0] > 7 and df_s.shape[1] > 4:
                 raw_prod2 = str(df_s.iloc[7, 0]).strip()
                 norm_prod2 = raw_prod2.replace(" ", "")
@@ -811,8 +819,14 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                         act2_val = float(act2_raw) if pd.notna(act2_raw) else 0.0
                     except:
                         act2_val = 0.0
+                    
+                    prep2_raw = df_s.iloc[7, 1]
+                    try:
+                        prep2_val = float(prep2_raw) if pd.notna(prep2_raw) else 0.0
+                    except:
+                        prep2_val = 0.0
                         
-                    if act2_val > 0:
+                    if act2_val > 0 or prep2_val > 0:
                         records.append({
                             "생산일자": formatted_prod_date, 
                             "제품명": "크라이 컷레터스", 
@@ -821,7 +835,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                             "작업일지_롯트": "수불부코드자동적용", 
                             "act_g": act2_val,
                             "실투입량(전)": round(act2_val / 1000.0, 1), 
-                            "준비양(후)": 0.0,
+                            "준비양(후)": round(prep2_val / 1000.0, 1),
                             "has_lot": True, 
                         })
 
@@ -943,7 +957,7 @@ if excel_file is not None:
             korean_column_map = {
                 "date": "일자",
                 "yangsangchu_in": "양상추_입고량(kg)", "yangsangchu_use": "양상추_투입량(kg)", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고(kg)",
-                "yangbaechu_in": "양배추_입고량(kg)", "yangbaechu_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
+                "yangbaechu_in": "양배추_입고량(kg)", "양배추_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
                 "jeokchae_in": "적채_입고량(kg)", "jeokchae_use": "적채_투입량(kg)", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고(kg)",
                 "note": "비고",
             }
@@ -1043,7 +1057,6 @@ if excel_file is not None:
                 df_target_6["_item_sort"] = df_target_6["품목"].map(lambda x: item_priority.get(x, 99))
                 df_target_6 = df_target_6.sort_values(by=["제품명", "_item_sort"])
                 
-                # is_completed=True 옵션으로 렌더링 호출
                 html_process_log_completed = render_process_log_html(selected_date_6, df_target_6, is_completed=True)
                 
                 col_p_btn_6, _ = st.columns([1, 3])
@@ -1072,3 +1085,5 @@ else:
         st.info("👆 엑셀 파일을 업로드하면 전처리 공정일지를 확인하고 출력할 수 있습니다.")
     with tab6:
         st.info("👆 전처리 공정일지 완성본을 확인할 수 있습니다.")
+
+```
