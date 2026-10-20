@@ -88,7 +88,7 @@ def save_closed_lots(closed_ym, item_lots):
 init_db()
 
 # ---------------------------------------------------------
-# [개선] 새 창 팝업 없이 즉시 인쇄/PDF 저장 버튼 생성 함수 (Hidden Iframe 방식)
+# 원클릭 즉시 인쇄/PDF 저장 버튼 생성 함수
 # ---------------------------------------------------------
 def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력 / PDF"):
     b64 = base64.b64encode(html_payload.encode('utf-8')).decode('utf-8')
@@ -122,7 +122,6 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
                 var b64 = "{b64}";
                 var decoded = decodeURIComponent(escape(window.atob(b64)));
                 
-                // 화면에 보이지 않는 iframe을 생성하여 문서 삽입
                 var iframe = document.createElement('iframe');
                 iframe.style.position = 'absolute';
                 iframe.style.width = '0px';
@@ -137,7 +136,6 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
                 
                 iframe.contentWindow.focus();
                 
-                // 문서가 로드될 시간을 짧게 준 뒤 브라우저 인쇄창 호출
                 setTimeout(function() {{ 
                     iframe.contentWindow.print(); 
                 }}, 500);
@@ -202,9 +200,9 @@ def render_printable_document(title, df_data):
     return full_html
 
 # ---------------------------------------------------------
-# 전처리 공정일지 전용 HTML 렌더링 함수
+# [수정] 전처리 공정일지 전용 HTML 렌더링 함수 (is_completed 플래그 추가)
 # ---------------------------------------------------------
-def render_process_log_html(date_str, df_target):
+def render_process_log_html(date_str, df_target, is_completed=False):
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         yyyy, mm, dd = dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
@@ -232,7 +230,7 @@ def render_process_log_html(date_str, df_target):
             else:
                 cut_spec = ""
 
-            # 원료코드 분류 (프릴은 매입자료 기준코드 사용)
+            # 원료코드 분류
             if "프릴" in item:
                 display_code = row.get("매입자료 기준 코드", "-")
             else:
@@ -248,7 +246,12 @@ def render_process_log_html(date_str, df_target):
                 prod_cell = ""
                 check_cell = ""
 
-            # 투입량(후) 열은 빈칸
+            # 투입량(후) 값 처리 (완성본 탭이면 준비양(후) 출력, 아니면 빈칸)
+            if is_completed:
+                input_after_td = f'<td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>'
+            else:
+                input_after_td = '<td></td>'
+
             rows_html += f"""
             <tr>
                 {prod_cell}
@@ -258,7 +261,7 @@ def render_process_log_html(date_str, df_target):
                 {check_cell}
                 <td>{cut_spec}</td>
                 <td style="text-align:right;">{row.get("실투입량(전)", 0)} kg</td>
-                <td></td>
+                {input_after_td}
                 <td></td>
             </tr>
             """
@@ -799,7 +802,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "has_lot": has_lot,
                 })
                 
-            # [수정] 컷레터스 추출 및 제품명 '크라이 컷레터스' 적용
             if df_s.shape[0] > 7 and df_s.shape[1] > 4:
                 raw_prod2 = str(df_s.iloc[7, 0]).strip()
                 norm_prod2 = raw_prod2.replace(" ", "")
@@ -854,7 +856,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 valid_p.sort(key=lambda x: x["std_date"], reverse=True)
                 code_purchase = valid_p[0]["code"]
 
-        # [수정] 크라이 컷레터스의 경우 수불부 생성 코드를 그대로 작업일지 코드로 강제 부여
         if rec["제품명"] == "크라이 컷레터스":
             code_worklog = code_subul
             is_match = "일치(수불부 자동부여)"
@@ -889,14 +890,15 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     return df_report[["생산일자", "제품명", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
 
 # ---------------------------------------------------------
-# Streamlit 화면 구성 (5개 탭)
+# Streamlit 화면 구성 (6개 탭)
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔍 원료코드 대조표 (자동 연동)",
     "📊 표준 원재료 수불부 정리",
     "🏷️ 원료코드 생성 및 일자별 정리",
     "🔒 당월 수불 마감 확정",
-    "📋 전처리 공정일지 출력"
+    "📋 전처리 공정일지 출력",
+    "📋 전처리 공정일지 (완성본)"
 ])
 
 if excel_file is not None:
@@ -999,22 +1001,22 @@ if excel_file is not None:
                 st.balloons()
                 st.success(f"✅ **{closed_ym_input}** 수불 마감이 성공적으로 저장되었습니다!")
 
-        # --- Tab 5: 전처리 공정일지 생성 ---
+        # --- Tab 5: 전처리 공정일지 생성 (빈칸용) ---
         with tab5:
-            st.subheader("📋 전처리 공정일지 자동 생성 및 출력")
+            st.subheader("📋 전처리 공정일지 자동 생성 (수기 작성용)")
             if not df_result.empty:
                 unique_dates = sorted(df_result["생산일자"].unique())
                 
                 col_date, col_empty = st.columns([1, 2])
                 with col_date:
-                    selected_date = st.selectbox("📅 출력할 생산일자를 선택하세요", unique_dates)
+                    selected_date = st.selectbox("📅 출력할 생산일자를 선택하세요 (빈칸용)", unique_dates, key="tab5_date")
                 
                 df_target = df_result[df_result["생산일자"] == selected_date].copy()
                 item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
                 df_target["_item_sort"] = df_target["품목"].map(lambda x: item_priority.get(x, 99))
                 df_target = df_target.sort_values(by=["제품명", "_item_sort"])
                 
-                html_process_log = render_process_log_html(selected_date, df_target)
+                html_process_log = render_process_log_html(selected_date, df_target, is_completed=False)
                 
                 col_p_btn, _ = st.columns([1, 3])
                 with col_p_btn:
@@ -1023,6 +1025,34 @@ if excel_file is not None:
                 st.info("💡 위 [바로 출력 / PDF] 버튼을 누르면 인쇄 대화상자가 즉시 나타납니다. (가로 방향 인쇄 권장)")
                 
                 components.html(html_process_log, height=800, scrolling=True)
+            else:
+                st.warning("데이터를 불러오지 못했습니다. 업로드한 파일을 확인해주세요.")
+
+        # --- Tab 6: 전처리 공정일지 생성 (완성본) ---
+        with tab6:
+            st.subheader("📋 전처리 공정일지 자동 생성 (완성본)")
+            if not df_result.empty:
+                unique_dates = sorted(df_result["생산일자"].unique())
+                
+                col_date_6, col_empty_6 = st.columns([1, 2])
+                with col_date_6:
+                    selected_date_6 = st.selectbox("📅 출력할 생산일자를 선택하세요 (완성본)", unique_dates, key="tab6_date")
+                
+                df_target_6 = df_result[df_result["생산일자"] == selected_date_6].copy()
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
+                df_target_6["_item_sort"] = df_target_6["품목"].map(lambda x: item_priority.get(x, 99))
+                df_target_6 = df_target_6.sort_values(by=["제품명", "_item_sort"])
+                
+                # is_completed=True 옵션으로 렌더링 호출
+                html_process_log_completed = render_process_log_html(selected_date_6, df_target_6, is_completed=True)
+                
+                col_p_btn_6, _ = st.columns([1, 3])
+                with col_p_btn_6:
+                    render_direct_print_button(html_process_log_completed, "🖨️ 완성본 바로 출력 / PDF")
+                
+                st.info("💡 위 [바로 출력 / PDF] 버튼을 누르면 인쇄 대화상자가 즉시 나타납니다. (가로 방향 인쇄 권장)")
+                
+                components.html(html_process_log_completed, height=800, scrolling=True)
             else:
                 st.warning("데이터를 불러오지 못했습니다. 업로드한 파일을 확인해주세요.")
 
@@ -1040,3 +1070,5 @@ else:
         st.info("👆 샐러드 생산일지 엑셀 파일을 업로드하시면 마감 대상 잔여 롯트를 확인할 수 있습니다.")
     with tab5:
         st.info("👆 엑셀 파일을 업로드하면 전처리 공정일지를 확인하고 출력할 수 있습니다.")
+    with tab6:
+        st.info("👆 전처리 공정일지 완성본을 확인할 수 있습니다.")
