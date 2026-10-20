@@ -246,11 +246,11 @@ def render_process_log_html(date_str, df_target, is_completed=False):
                 prod_cell = ""
                 check_cell = ""
 
-            # 투입량(후) 값 처리
+            # [수정] 투입량(후) 값 처리 - 완성본이 아닐 때는 단위 'kg'만 우측에 출력
             if is_completed:
                 input_after_td = f'<td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>'
             else:
-                input_after_td = '<td></td>'
+                input_after_td = '<td style="text-align:right;">kg</td>'
 
             rows_html += f"""
             <tr>
@@ -802,7 +802,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "has_lot": has_lot,
                 })
                 
-            # [수정] 컷레터스 데이터 추출 시 B8(준비양) 반영
             if df_s.shape[0] > 7 and df_s.shape[1] > 4:
                 raw_prod2 = str(df_s.iloc[7, 0]).strip()
                 norm_prod2 = raw_prod2.replace(" ", "")
@@ -950,7 +949,7 @@ if excel_file is not None:
             korean_column_map = {
                 "date": "일자",
                 "yangsangchu_in": "양상추_입고량(kg)", "yangsangchu_use": "양상추_투입량(kg)", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고(kg)",
-                "yangbaechu_in": "양배추_입고량(kg)", "양배추_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
+                "yangbaechu_in": "양배추_입고량(kg)", "yangbaechu_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
                 "jeokchae_in": "적채_입고량(kg)", "jeokchae_use": "적채_투입량(kg)", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고(kg)",
                 "note": "비고",
             }
