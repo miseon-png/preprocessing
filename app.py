@@ -222,10 +222,8 @@ def render_process_log_html(date_str, df_target):
             item = row.get("품목", "")
             prod_name = row.get("제품명", "")
             
-            # 절단 규격 분류 (크라이 컷레터스 6X6 반영)
-            if prod_name == "크라이 컷레터스":
-                cut_spec = "절단 6X6cm"
-            elif "양상추" in item or "프릴" in item:
+            # 절단 규격 분류
+            if "양상추" in item or "프릴" in item:
                 cut_spec = "절단 4X4cm"
             elif "양배추" in item or "적채" in item:
                 cut_spec = "슬라이스 4mm"
@@ -799,7 +797,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "has_lot": has_lot,
                 })
                 
-            # [수정] 컷레터스 추출 및 제품명 '크라이 컷레터스' 적용
+            # [수정] 컷레터스 추출 및 수불부 자동코드 강제 부여
             if df_s.shape[0] > 7 and df_s.shape[1] > 4:
                 raw_prod2 = str(df_s.iloc[7, 0]).strip()
                 norm_prod2 = raw_prod2.replace(" ", "")
@@ -813,7 +811,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     if act2_val > 0:
                         records.append({
                             "생산일자": formatted_prod_date, 
-                            "제품명": "크라이 컷레터스", 
+                            "제품명": "컷레터스",
                             "prod_yymmdd": prod_yymmdd, 
                             "품목": "양상추",
                             "작업일지_롯트": "수불부코드자동적용", 
@@ -843,6 +841,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
         p = prefix_map.get(lookup_item, prefix_map.get("프릴" if is_frill else "양상추", "X"))
 
+        # 소진 매입재고 기반 일자별 원료코드(수불부 기준 코드) 추출
         code_subul = "-"
         if not is_frill:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
@@ -854,8 +853,8 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 valid_p.sort(key=lambda x: x["std_date"], reverse=True)
                 code_purchase = valid_p[0]["code"]
 
-        # [수정] 크라이 컷레터스의 경우 수불부 생성 코드를 그대로 작업일지 코드로 강제 부여
-        if rec["제품명"] == "크라이 컷레터스":
+        # [수정] 컷레터스의 경우 수기 로트가 없으므로 수불부 생성 코드를 그대로 작업일지 코드로 강제 부여
+        if rec["제품명"] == "컷레터스":
             code_worklog = code_subul
             is_match = "일치(수불부 자동부여)"
         else:
