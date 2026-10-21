@@ -246,7 +246,7 @@ def render_process_log_html(date_str, df_target, is_completed=False):
                 prod_cell = ""
                 check_cell = ""
 
-            # [수정] 투입량(후) 값 처리 - 완성본이 아닐 때는 단위 'kg'만 우측에 출력
+            # 투입량(후) 값 처리 - 완성본이 아닐 때는 단위 'kg'만 우측에 출력
             if is_completed:
                 input_after_td = f'<td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>'
             else:
@@ -687,8 +687,12 @@ def parse_and_convert_to_standard_ledger(excel_file):
 def parse_csv_purchase(uploaded_file):
     if uploaded_file is None: return pd.DataFrame()
     file_name = uploaded_file.name.lower()
+    
+    # [수정됨] 엑셀 파일인 경우 모든 시트를 병합하여 반환
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
-        try: return pd.read_excel(uploaded_file)
+        try:
+            df_dict = pd.read_excel(uploaded_file, sheet_name=None)
+            return pd.concat(df_dict.values(), ignore_index=True)
         except Exception: return pd.DataFrame()
 
     encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
