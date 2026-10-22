@@ -1005,70 +1005,81 @@ if excel_file is not None:
             
             st.dataframe(df_preview, use_container_width=True)
 
-            # --- Tab 2 내부 가장 하단에 구글 시트 전송 버튼 추가 (출고량만 덮어쓰기 전송) ---
+            # --- Tab 2 내부 가장 하단에 구글 시트 전송 버튼 추가 (지정 기간 덮어쓰기 전송) ---
             st.markdown("---")
-            st.subheader("☁️ 메인 수불부 구글 시트로 출고량 연동 (덮어쓰기 방식)")
-            st.info("💡 엑셀에 포함된 일자의 기존 '시스템자동' 연동 데이터는 지워지고 최신 '출고(사용량)' 데이터로 덮어씌워집니다. (수기 입력 데이터는 보존됨)")
+            st.subheader("☁️ 메인 수불부 구글 시트로 출고량 연동 (지정 기간 덮어쓰기)")
+            st.info("💡 선택한 기간의 엑셀 데이터만 전송됩니다. 해당 기간 내 시트의 기존 '시스템자동' 데이터는 지워지고 최신 데이터로 덮어씌워집니다. (수기 입력 데이터는 보존됨)")
             
-            if st.button("🚀 현재 엑셀 데이터로 구글 시트 출고량 업데이트하기", type="primary", use_container_width=True):
-                with st.spinner("구글 시트의 기존 데이터를 정리하고 최신 출고 데이터를 전송 중입니다..."):
+            col_sync_s, col_sync_e = st.columns(2)
+            with col_sync_s:
+                sync_start_date = st.date_input("전송 시작일", value=datetime.today().replace(day=1), key="sync_start")
+            with col_sync_e:
+                sync_end_date = st.date_input("전송 종료일", value=datetime.today(), key="sync_end")
+            
+            if st.button("🚀 선택한 기간의 데이터로 구글 시트 출고량 업데이트하기", type="primary", use_container_width=True):
+                with st.spinner(f"구글 시트의 {sync_start_date} ~ {sync_end_date} 데이터를 정리하고 최신 출고 데이터를 전송 중입니다..."):
                     try:
+                        # 1. 엑셀 데이터 중 선택한 기간에 해당하는 데이터만 필터링
+                        filtered_rows = []
+                        for row in standard_rows:
+                            try:
+                                row_date = datetime.strptime(row["date"], "%Y-%m-%d").date()
+                                if sync_start_date <= row_date <= sync_end_date:
+                                    filtered_rows.append(row)
+                            except ValueError:
+                                continue
+                                
                         doc = init_gspread()
                         sheet = doc.worksheet("시트1") # 수불부 시트 이름에 맞게 확인
                         
-                        # 1. 업로드된 엑셀 데이터의 고유 날짜들 추출
-                        excel_dates = set(str(row["date"]) for row in standard_rows)
+                        # 2. 구글 시트 전체 데이터 가져오기
+                        all_values = sheet.get_all_values()
                         
-                        if not excel_dates:
-                            st.warning("전송할 데이터가 없습니다.")
-                        else:
-                            # 2. 구글 시트 전체 데이터 가져오기
-                            all_values = sheet.get_all_values()
+                        # 3. 삭제할 행 인덱스 찾기 (조건: '선택한 기간 내' AND '시스템자동' 입력건)
+                        rows_to_delete = []
+                        for i, row_data in enumerate(all_values):
+                            if i == 0: 
+                                continue
                             
-                            # 3. 삭제할 행 인덱스 찾기 (조건: 엑셀에 있는 날짜 AND 시스템자동 입력건)
-                            rows_to_delete = []
-                            for i, row_data in enumerate(all_values):
-                                if i == 0: 
-                                    continue
-                                
-                                sheet_date = row_data[0].strip() if len(row_data) > 0 else ""
-                                sheet_vendor = row_data[2].strip() if len(row_data) > 2 else ""
-                                
-                                if sheet_date in excel_dates and sheet_vendor == "시스템자동":
+                            sheet_date_str = row_data[0].strip() if len(row_data) > 0 else ""
+                            sheet_vendor = row_data[2].strip() if len(row_data) > 2 else ""
+                            
+                            try:
+                                sheet_date = datetime.strptime(sheet_date_str, "%Y-%m-%d").date()
+                                if sync_start_date <= sheet_date <= sync_end_date and sheet_vendor == "시스템자동":
                                     rows_to_delete.append(i + 1)
+                            except ValueError:
+                                pass # 날짜 형식이 잘못된 셀은 무시
+                        
+                        # 4. 행 삭제 (아래쪽 행부터 지워야 인덱스가 꼬이지 않음)
+                        for row_idx in sorted(rows_to_delete, reverse=True):
+                            sheet.delete_row(row_idx)
+                        
+                        # 5. 새로운 '출고' 데이터 생성 (필터링된 데이터 기준)
+                        rows_to_upload = []
+                        for row in filtered_rows:
+                            date_str = str(row["date"])
                             
-                            # 4. 행 삭제 (아래쪽 행부터 지워야 인덱스가 꼬이지 않음)
-                            for row_idx in sorted(rows_to_delete, reverse=True):
-                                sheet.delete_row(row_idx)
-                            
-                            # 5. 새로운 '출고' 데이터 생성
-                            rows_to_upload = []
-                            for row in standard_rows:
-                                date_str = str(row["date"])
+                            if row.get("yangsangchu_use", 0) > 0:
+                                rows_to_upload.append([date_str, "출고", "시스템자동", "양상추", row["yangsangchu_use"], 0, 0, row.get("yangsangchu_code", "")])
                                 
-                                # [양상추] 출고량만 전송
-                                if row.get("yangsangchu_use", 0) > 0:
-                                    rows_to_upload.append([date_str, "출고", "시스템자동", "양상추", row["yangsangchu_use"], 0, 0, row.get("yangsangchu_code", "")])
-                                    
-                                # [양배추] 출고량만 전송
-                                if row.get("yangbaechu_use", 0) > 0:
-                                    rows_to_upload.append([date_str, "출고", "시스템자동", "양배추", row["yangbaechu_use"], 0, 0, row.get("yangbaechu_code", "")])
-                                    
-                                # [적채] 출고량만 전송
-                                if row.get("jeokchae_use", 0) > 0:
-                                    rows_to_upload.append([date_str, "출고", "시스템자동", "적채", row["jeokchae_use"], 0, 0, row.get("jeokchae_code", "")])
+                            if row.get("yangbaechu_use", 0) > 0:
+                                rows_to_upload.append([date_str, "출고", "시스템자동", "양배추", row["yangbaechu_use"], 0, 0, row.get("yangbaechu_code", "")])
+                                
+                            if row.get("jeokchae_use", 0) > 0:
+                                rows_to_upload.append([date_str, "출고", "시스템자동", "적채", row["jeokchae_use"], 0, 0, row.get("jeokchae_code", "")])
 
-                            # 6. 새 데이터 구글 시트에 일괄 추가
-                            if rows_to_upload:
-                                sheet.append_rows(rows_to_upload)
-                                st.success(f"✅ 기존 중복 출고 데이터 {len(rows_to_delete)}건 삭제 후, 최신 출고 데이터 {len(rows_to_upload)}건이 성공적으로 업데이트되었습니다!")
-                                st.balloons()
+                        # 6. 새 데이터 구글 시트에 일괄 추가
+                        if rows_to_upload:
+                            sheet.append_rows(rows_to_upload)
+                            st.success(f"✅ 지정 기간의 기존 중복 데이터 {len(rows_to_delete)}건 삭제 후, 최신 출고 데이터 {len(rows_to_upload)}건이 성공적으로 업데이트되었습니다!")
+                            st.balloons()
+                        else:
+                            if len(rows_to_delete) > 0:
+                                 st.success(f"✅ 지정 기간의 기존 데이터 {len(rows_to_delete)}건 삭제 완료. (새로 전송할 출고 데이터는 없습니다.)")
                             else:
-                                if len(rows_to_delete) > 0:
-                                     st.success(f"✅ 기존 중복 출고 데이터 {len(rows_to_delete)}건 삭제 완료. (새로 전송할 출고 데이터는 없습니다.)")
-                                else:
-                                     st.warning("전송할 출고 수량(0 초과) 데이터가 없습니다.")
-                            
+                                 st.warning("지정 기간 내에 전송할 출고 수량(0 초과) 데이터가 없습니다.")
+                                
                     except Exception as e:
                         st.error(f"구글 시트 연동 중 오류가 발생했습니다: {e}")
 
