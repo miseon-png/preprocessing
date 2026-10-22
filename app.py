@@ -12,10 +12,47 @@ from openpyxl.utils import get_column_letter
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", layout="wide")
 
 DB_FILE = "stock_master.db"
+
+# ---------------------------------------------------------
+# 구글 시트 연동 함수 추가
+# ---------------------------------------------------------
+@st.cache_resource
+def init_gspread():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    
+    gcp_secrets = st.secrets["gcp_service_account"]
+    private_key = gcp_secrets.get("private_key", "")
+    if "\\n" in private_key:
+        private_key = private_key.replace("\\n", "\n")
+    
+    creds_dict = {
+        "type": "service_account",
+        "project_id": gcp_secrets.get("project_id", ""),
+        "private_key_id": gcp_secrets.get("private_key_id", ""),
+        "private_key": private_key,
+        "client_email": gcp_secrets.get("client_email", ""),
+        "client_id": gcp_secrets.get("client_id", ""),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": gcp_secrets.get("client_x509_cert_url", "")
+    }
+
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    
+    # 두 번째 수불부 앱 구글 시트 주소
+    url = "https://docs.google.com/spreadsheets/d/1WM472gdj_7HBUvJdLRgwIU0t7GAMnZ47GpsCJfB5pBo/edit"
+    return client.open_by_url(url)
 
 # ---------------------------------------------------------
 # DB 관리 함수
@@ -688,7 +725,7 @@ def parse_csv_purchase(uploaded_file):
     if uploaded_file is None: return pd.DataFrame()
     file_name = uploaded_file.name.lower()
     
-    # [수정됨] 엑셀 파일인 경우 모든 시트를 병합하여 반환
+    # 엑셀 파일인 경우 모든 시트를 병합하여 반환
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
         try:
             df_dict = pd.read_excel(uploaded_file, sheet_name=None)
@@ -967,6 +1004,73 @@ if excel_file is not None:
                 render_direct_print_button(html_content, "🖨️ 바로 출력 / PDF 저장")
             
             st.dataframe(df_preview, use_container_width=True)
+
+            # --- Tab 2 내부 가장 하단에 구글 시트 전송 버튼 추가 (출고량만 덮어쓰기 전송) ---
+            st.markdown("---")
+            st.subheader("☁️ 메인 수불부 구글 시트로 출고량 연동 (덮어쓰기 방식)")
+            st.info("💡 엑셀에 포함된 일자의 기존 '시스템자동' 연동 데이터는 지워지고 최신 '출고(사용량)' 데이터로 덮어씌워집니다. (수기 입력 데이터는 보존됨)")
+            
+            if st.button("🚀 현재 엑셀 데이터로 구글 시트 출고량 업데이트하기", type="primary", use_container_width=True):
+                with st.spinner("구글 시트의 기존 데이터를 정리하고 최신 출고 데이터를 전송 중입니다..."):
+                    try:
+                        doc = init_gspread()
+                        sheet = doc.worksheet("시트1") # 수불부 시트 이름에 맞게 확인
+                        
+                        # 1. 업로드된 엑셀 데이터의 고유 날짜들 추출
+                        excel_dates = set(str(row["date"]) for row in standard_rows)
+                        
+                        if not excel_dates:
+                            st.warning("전송할 데이터가 없습니다.")
+                        else:
+                            # 2. 구글 시트 전체 데이터 가져오기
+                            all_values = sheet.get_all_values()
+                            
+                            # 3. 삭제할 행 인덱스 찾기 (조건: 엑셀에 있는 날짜 AND 시스템자동 입력건)
+                            rows_to_delete = []
+                            for i, row_data in enumerate(all_values):
+                                if i == 0: 
+                                    continue
+                                
+                                sheet_date = row_data[0].strip() if len(row_data) > 0 else ""
+                                sheet_vendor = row_data[2].strip() if len(row_data) > 2 else ""
+                                
+                                if sheet_date in excel_dates and sheet_vendor == "시스템자동":
+                                    rows_to_delete.append(i + 1)
+                            
+                            # 4. 행 삭제 (아래쪽 행부터 지워야 인덱스가 꼬이지 않음)
+                            for row_idx in sorted(rows_to_delete, reverse=True):
+                                sheet.delete_row(row_idx)
+                            
+                            # 5. 새로운 '출고' 데이터 생성
+                            rows_to_upload = []
+                            for row in standard_rows:
+                                date_str = str(row["date"])
+                                
+                                # [양상추] 출고량만 전송
+                                if row.get("yangsangchu_use", 0) > 0:
+                                    rows_to_upload.append([date_str, "출고", "시스템자동", "양상추", row["yangsangchu_use"], 0, 0, row.get("yangsangchu_code", "")])
+                                    
+                                # [양배추] 출고량만 전송
+                                if row.get("yangbaechu_use", 0) > 0:
+                                    rows_to_upload.append([date_str, "출고", "시스템자동", "양배추", row["yangbaechu_use"], 0, 0, row.get("yangbaechu_code", "")])
+                                    
+                                # [적채] 출고량만 전송
+                                if row.get("jeokchae_use", 0) > 0:
+                                    rows_to_upload.append([date_str, "출고", "시스템자동", "적채", row["jeokchae_use"], 0, 0, row.get("jeokchae_code", "")])
+
+                            # 6. 새 데이터 구글 시트에 일괄 추가
+                            if rows_to_upload:
+                                sheet.append_rows(rows_to_upload)
+                                st.success(f"✅ 기존 중복 출고 데이터 {len(rows_to_delete)}건 삭제 후, 최신 출고 데이터 {len(rows_to_upload)}건이 성공적으로 업데이트되었습니다!")
+                                st.balloons()
+                            else:
+                                if len(rows_to_delete) > 0:
+                                     st.success(f"✅ 기존 중복 출고 데이터 {len(rows_to_delete)}건 삭제 완료. (새로 전송할 출고 데이터는 없습니다.)")
+                                else:
+                                     st.warning("전송할 출고 수량(0 초과) 데이터가 없습니다.")
+                            
+                    except Exception as e:
+                        st.error(f"구글 시트 연동 중 오류가 발생했습니다: {e}")
 
         # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
