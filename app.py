@@ -20,7 +20,7 @@ st.set_page_config(page_title="샐러드 생산일보 및 원료코드 System", 
 DB_FILE = "stock_master.db"
 
 # ---------------------------------------------------------
-# 구글 시트 연동 함수 추가
+# 구글 시트 연동 함수
 # ---------------------------------------------------------
 @st.cache_resource
 def init_gspread():
@@ -50,7 +50,6 @@ def init_gspread():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # 두 번째 수불부 앱 구글 시트 주소
     url = "https://docs.google.com/spreadsheets/d/1WM472gdj_7HBUvJdLRgwIU0t7GAMnZ47GpsCJfB5pBo/edit"
     return client.open_by_url(url)
 
@@ -257,7 +256,6 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             item = row.get("품목", "")
             prod_name = row.get("제품명", "")
             
-            # 절단 규격 분류
             if prod_name == "크라이 컷레터스":
                 cut_spec = "절단 6X6cm"
             elif "양상추" in item or "프릴" in item:
@@ -267,13 +265,11 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             else:
                 cut_spec = ""
 
-            # 원료코드 분류
             if "프릴" in item:
                 display_code = row.get("매입자료 기준 코드", "-")
             else:
                 display_code = row.get("수불부 기준 코드", "-")
 
-            # 다중 제품 rowspan 동적 그룹핑
             if prod_name != current_product:
                 current_product = prod_name
                 prod_row_count = len(df_target[df_target['제품명'] == prod_name])
@@ -283,7 +279,6 @@ def render_process_log_html(date_str, df_target, is_completed=False):
                 prod_cell = ""
                 check_cell = ""
 
-            # 투입량(후) 값 처리 - 완성본이 아닐 때는 단위 'kg'만 우측에 출력
             if is_completed:
                 input_after_td = f'<td style="text-align:right;">{row.get("준비양(후)", 0)} kg</td>'
             else:
@@ -303,7 +298,6 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             </tr>
             """
     
-    # 남은 여백 줄 추가
     for _ in range(5):
         rows_html += "<tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>"
 
@@ -348,8 +342,8 @@ def render_process_log_html(date_str, df_target, is_completed=False):
         <table class="main-table">
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
-                <td colspan="2" style="background-color: #fff;">{yyyy} 년 &nbsp;&nbsp;&nbsp; {mm} 월 &nbsp;&nbsp;&nbsp; {dd} 일</td>
-                <td colspan="2" style="background-color: #fff;">&nbsp;&nbsp; : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ~ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp;&nbsp;</td>
+                <td colspan="2" style="background-color: #fff;">{yyyy} 년     {mm} 월     {dd} 일</td>
+                <td colspan="2" style="background-color: #fff;">   :          ~          :   </td>
                 <td>작성자</td>
                 <td colspan="2" style="background-color: #fff;"></td>
             </tr>
@@ -488,11 +482,12 @@ def parse_and_convert_to_standard_ledger(excel_file):
     stock_sheet = find_stock_sheet_name(xls)
     df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
+    # [수정] 마이너스 부호(-)를 보존하여 반품 음수 입고를 정상 차감 반영
     def parse_cell(val):
         if pd.isna(val): return 0.0
         try:
-            c = re.sub(r"[^\d.]", "", str(val))
-            return float(c) if c else 0.0
+            c = re.sub(r"[^\d.-]", "", str(val))
+            return float(c) if c and c != "-" else 0.0
         except Exception: return 0.0
 
     raw_parsed_list = []
@@ -565,6 +560,7 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
+        # 순입고량이 0보다 큰 경우에만 소진 큐에 정상 등록
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K01"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K01"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K01"})
@@ -725,7 +721,6 @@ def parse_csv_purchase(uploaded_file):
     if uploaded_file is None: return pd.DataFrame()
     file_name = uploaded_file.name.lower()
     
-    # 엑셀 파일인 경우 모든 시트를 병합하여 반환
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
         try:
             df_dict = pd.read_excel(uploaded_file, sheet_name=None)
@@ -748,11 +743,17 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
     purchase_records = []
     if has_csv:
-        date_col = next((c for c in df_csv.columns if "기간" in str(c) or "일자" in str(c) or "날짜" in str(c)), None)
-        item_col = next((c for c in df_csv.columns if "품명" in str(c) or "품목" in str(c) or "원재료" in str(c)), None)
-        vendor_col = next((c for c in df_csv.columns if "거래처" in str(c) or "매입처" in str(c) or "공급처" in str(c)), None)
+        date_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["기간", "일자", "날짜"])), None)
+        item_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["품명", "품목", "원재료"])), None)
+        vendor_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["거래처", "매입처", "공급처"])), None)
+        qty_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["수량", "중량", "입고량"])), None)
+        type_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["구분", "유형", "상태", "비고"])), None)
 
         if date_col and item_col:
+            # [수정] (품목, 입고일자, 원료코드) 단위로 순입고량(입고 - 반품)을 합산하여 유효 입고건만 추출
+            lot_quantities = {}
+            lot_meta = {}
+
             for _, c_row in df_csv.iterrows():
                 p_date_raw = c_row[date_col]
                 p_item_raw = str(c_row[item_col]).strip()
@@ -770,17 +771,41 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 elif "프릴" in p_item_raw: p_item = "프릴아이스"
                 else: p_item = p_item_raw
 
+                # 수량 추출
+                qty = 1.0
+                if qty_col and pd.notna(c_row[qty_col]):
+                    try:
+                        clean_qty = re.sub(r"[^\d.-]", "", str(c_row[qty_col]))
+                        if clean_qty and clean_qty != "-":
+                            qty = float(clean_qty)
+                    except ValueError:
+                        qty = 1.0
+
+                # '구분/비고' 컬럼에 반품 표시가 있거나 수량이 음수인 경우 차감 처리
+                type_val = str(c_row[type_col]) if type_col and pd.notna(c_row[type_col]) else ""
+                if "반품" in type_val or "취소" in type_val:
+                    qty = -abs(qty)
+
                 pref = prefix_map.get(p_item, prefix_map.get("프릴" if "프릴" in p_item else "양상추", "X"))
                 v_code = vendor_code_map.get(p_vendor_raw, "K01")
                 p_code = f"{pref}{p_yymmdd}-{v_code}"
 
-                purchase_records.append({
-                    "std_date": p_std_dt,
-                    "yymmdd": p_yymmdd,
-                    "item": p_item,
-                    "code": p_code,
-                    "vendor": p_vendor_raw
-                })
+                lot_key = (p_item, p_std_dt, p_code)
+                lot_quantities[lot_key] = lot_quantities.get(lot_key, 0.0) + qty
+
+                if lot_key not in lot_meta:
+                    lot_meta[lot_key] = {
+                        "std_date": p_std_dt,
+                        "yymmdd": p_yymmdd,
+                        "item": p_item,
+                        "code": p_code,
+                        "vendor": p_vendor_raw
+                    }
+
+            # 전량 반품되지 않고 순입고량이 0보다 큰 유효 롯트만 후보군으로 등록
+            for lot_key, net_qty in lot_quantities.items():
+                if net_qty > 0:
+                    purchase_records.append(lot_meta[lot_key])
 
     code_summary_map = {}
     for r in code_summary_rows:
@@ -1005,7 +1030,7 @@ if excel_file is not None:
             
             st.dataframe(df_preview, use_container_width=True)
 
-            # --- Tab 2 내부 가장 하단에 구글 시트 전송 버튼 추가 (지정 기간 덮어쓰기 전송) ---
+            # 구글 시트 연동 버튼
             st.markdown("---")
             st.subheader("☁️ 메인 수불부 구글 시트로 출고량 연동 (지정 기간 덮어쓰기)")
             st.info("💡 선택한 기간의 엑셀 데이터만 전송됩니다. 해당 기간 내 시트의 기존 '시스템자동' 데이터는 지워지고 최신 데이터로 덮어씌워집니다. (수기 입력 데이터는 보존됨)")
@@ -1019,7 +1044,6 @@ if excel_file is not None:
             if st.button("🚀 선택한 기간의 데이터로 구글 시트 출고량 업데이트하기", type="primary", use_container_width=True):
                 with st.spinner(f"구글 시트의 {sync_start_date} ~ {sync_end_date} 데이터를 정리하고 최신 출고 데이터를 전송 중입니다..."):
                     try:
-                        # 1. 엑셀 데이터 중 선택한 기간에 해당하는 데이터만 필터링
                         filtered_rows = []
                         for row in standard_rows:
                             try:
@@ -1030,12 +1054,10 @@ if excel_file is not None:
                                 continue
                                 
                         doc = init_gspread()
-                        sheet = doc.worksheet("시트1") # 수불부 시트 이름에 맞게 확인
+                        sheet = doc.worksheet("시트1")
                         
-                        # 2. 구글 시트 전체 데이터 가져오기
                         all_values = sheet.get_all_values()
                         
-                        # 3. 삭제할 행 인덱스 찾기 (조건: '선택한 기간 내' AND '시스템자동' 입력건)
                         rows_to_delete = []
                         for i, row_data in enumerate(all_values):
                             if i == 0: 
@@ -1049,13 +1071,11 @@ if excel_file is not None:
                                 if sync_start_date <= sheet_date <= sync_end_date and sheet_vendor == "시스템자동":
                                     rows_to_delete.append(i + 1)
                             except ValueError:
-                                pass # 날짜 형식이 잘못된 셀은 무시
+                                pass
                         
-                        # 4. 행 삭제 (아래쪽 행부터 지워야 인덱스가 꼬이지 않음)
                         for row_idx in sorted(rows_to_delete, reverse=True):
                             sheet.delete_row(row_idx)
                         
-                        # 5. 새로운 '출고' 데이터 생성 (필터링된 데이터 기준)
                         rows_to_upload = []
                         for row in filtered_rows:
                             date_str = str(row["date"])
@@ -1069,7 +1089,6 @@ if excel_file is not None:
                             if row.get("jeokchae_use", 0) > 0:
                                 rows_to_upload.append([date_str, "출고", "시스템자동", "적채", row["jeokchae_use"], 0, 0, row.get("jeokchae_code", "")])
 
-                        # 6. 새 데이터 구글 시트에 일괄 추가
                         if rows_to_upload:
                             sheet.append_rows(rows_to_upload)
                             st.success(f"✅ 지정 기간의 기존 중복 데이터 {len(rows_to_delete)}건 삭제 후, 최신 출고 데이터 {len(rows_to_upload)}건이 성공적으로 업데이트되었습니다!")
