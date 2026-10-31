@@ -762,7 +762,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
                 p_std_dt = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
 
-                # [수정] 프릴 또는 프릴아이스는 동일하게 '프릴아이스'로 표준화
                 if "양상추" in p_item_raw: p_item = "양상추"
                 elif "양배추" in p_item_raw: p_item = "양배추"
                 elif "적채" in p_item_raw: p_item = "적채"
@@ -904,7 +903,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         
         is_frill = "프릴" in raw_item
 
-        # [수정] 프릴 또는 프릴아이스는 무조건 '프릴아이스'로 lookup_item 통일
         if "양상추" in raw_item: lookup_item = "양상추"
         elif "양배추" in raw_item: lookup_item = "양배추"
         elif "적채" in raw_item: lookup_item = "적채"
@@ -917,26 +915,21 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         if not is_frill:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
-        # [수정 핵심] 프릴/프릴아이스 등 매입기준 코드 추출 시 최근 매입일 우선 탐색
+        # -------------------------------------------------------------
+        # [핵심 수정] 기준일(생산일자) 시점 이전/당일의 최근 매입일 코드를 취득
+        # 미래 매입건이나 전체 최신건을 가져오지 않고, 엄격히 기준일(prod_date) 이하만 필터링
+        # -------------------------------------------------------------
         code_purchase = "-"
         if has_csv:
-            # 1. 생산일 이하의 해당 품목 매입 내역 추출
             valid_p = [
                 pr for pr in purchase_records 
                 if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"])) 
                 and pr["std_date"] <= prod_date
             ]
             
-            # 2. 만약 매입 전표가 당일보다 미래 일자로 입력되어 있거나 생산일 이전 매입이 없으면 전체 매입 내역에서 탐색
-            if not valid_p:
-                valid_p = [
-                    pr for pr in purchase_records 
-                    if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"]))
-                ]
-
             if valid_p:
-                # yymmdd 및 std_date 기준 내림차순(최신순) 정렬하여 가장 최근 입고코드 선택
-                valid_p.sort(key=lambda x: (str(x.get("std_date", "")), str(x.get("yymmdd", ""))), reverse=True)
+                # 기준일 이하 매입건 중 가장 가까운 최근 매입일(내림차순 1순위)
+                valid_p.sort(key=lambda x: str(x.get("std_date", "")), reverse=True)
                 code_purchase = valid_p[0]["code"]
 
         if rec["제품명"] == "크라이 컷레터스":
@@ -955,7 +948,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 elif code_worklog == "없음":
                     is_match = "불일치(작업일지 미기재)"
                 elif code_purchase == "-":
-                    is_match = "불일치(매입내역 없음)"
+                    is_match = "불일치(기준일 이전 매입 없음)"
                 else:
                     is_match = "불일치(매입자료와 상이)"
             else:
