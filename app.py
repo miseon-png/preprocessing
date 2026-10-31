@@ -265,7 +265,6 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             else:
                 cut_spec = ""
 
-            # 프릴 계열은 매입자료 기준 코드 적용
             if "프릴" in item:
                 display_code = row.get("매입자료 기준 코드", "-")
             else:
@@ -788,7 +787,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 lot_str = str(lot).strip() if pd.notna(lot) else ""
                 has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
                 
-                yy_p, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
+                yy_p, prod_yymmdd, mmdd_p = extract_yymmdd_and_mmdd(prod_date)
                 if first_prod_year is None:
                     first_prod_year = yy_p
                 formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
@@ -797,6 +796,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     "생산일자": formatted_prod_date, 
                     "제품명": product_name,
                     "prod_yymmdd": prod_yymmdd, 
+                    "prod_mmdd": mmdd_p,
                     "품목": str(item).strip(),
                     "작업일지_롯트": lot_str if has_lot else "없음", "act_g": a_val,
                     "실투입량(전)": round(a_val / 1000.0, 1), "준비양(후)": round(p_val / 1000.0, 1),
@@ -824,6 +824,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                             "생산일자": formatted_prod_date, 
                             "제품명": "크라이 컷레터스", 
                             "prod_yymmdd": prod_yymmdd, 
+                            "prod_mmdd": mmdd_p,
                             "품목": "양상추",
                             "작업일지_롯트": "수불부코드자동적용", 
                             "act_g": act2_val,
@@ -834,7 +835,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
         except Exception: continue
 
-    # 매입자료 파싱 (업로드 파일 기반으로 정밀 매핑)
+    # 매입자료 파싱
     purchase_records = []
     if has_csv:
         date_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["기간", "일자", "날짜", "입고일", "일시"])), None)
@@ -855,8 +856,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 if pd.isna(p_date_raw) or not p_item_raw or p_item_raw == "nan": continue
                 if p_vendor_raw == "기타": continue
 
-                # 날짜 파싱 (연도 보존)
-                _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw, fallback_year=first_prod_year)
+                _, p_yymmdd, p_mmdd = extract_yymmdd_and_mmdd(p_date_raw, fallback_year=first_prod_year)
                 p_std_dt = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
 
                 if "양상추" in p_item_raw: p_item = "양상추"
@@ -889,6 +889,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     lot_meta[lot_key] = {
                         "std_date": p_std_dt,
                         "yymmdd": p_yymmdd,
+                        "mmdd": p_mmdd,
                         "item": p_item,
                         "code": p_code,
                         "vendor": p_vendor_raw
@@ -910,23 +911,12 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     if not records: return pd.DataFrame(), code_summary_rows
     records.sort(key=lambda x: x["prod_yymmdd"])
 
-    # 생산일지 연도와 매입 연도 일치 보정 (24년 vs 26년 불일치 방지)
-    if purchase_records and records:
-        sample_prod_year = records[0]["prod_yymmdd"][:2]
-        sample_purch_year = purchase_records[0]["yymmdd"][:2]
-        if sample_prod_year != sample_purch_year:
-            for rec in records:
-                # 매입 연도와 동일하게 맞춰서 비교
-                mmdd = rec["prod_yymmdd"][2:]
-                rec["prod_yymmdd"] = f"{sample_purch_year}{mmdd}"
-                rec["생산일자"] = f"20{sample_purch_year}-{mmdd[:2]}-{mmdd[2:]}"
-
     final_rows = []
     frill_summary_added = set()
 
     for rec in records:
         raw_item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
-        prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
+        prod_date, prod_yymmdd, prod_mmdd = rec["생산일자"], rec["prod_yymmdd"], rec.get("prod_mmdd", "")
         
         is_frill = "프릴" in raw_item
 
@@ -942,17 +932,21 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         if not is_frill:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
-        # 기준일(생산일자) 당일 및 이전 매입건 중 가장 최근 매입일 코드 취득
+        # -------------------------------------------------------------
+        # [핵심] 생산일자 당일 및 이전 매입건 중 가장 직전 최근 매입일 매칭
+        # 연도 불일치를 완벽 방어하기 위해 mmdd 기준으로도 비교 지원
+        # -------------------------------------------------------------
         code_purchase = "-"
         purch_source_desc = "-"
         if has_csv:
+            # 1단계: 표준 날짜(YYYY-MM-DD) 기준 이하 매입건 탐색
             valid_p = [
                 pr for pr in purchase_records 
                 if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"])) 
-                and pr["std_date"] <= prod_date
+                and (pr["std_date"] <= prod_date or pr.get("mmdd", "9999") <= prod_mmdd)
             ]
             
-            # 만약 기준일 이전 매입이 없으면 전체 매입 중 가장 빠른/가까운 건 매칭 (안전장치)
+            # 2단계: 기준일 이전 매입이 없으면 (예: 10/16 이전 생산분), 첫 매입건으로 자동 매칭
             if not valid_p:
                 valid_p = [
                     pr for pr in purchase_records 
@@ -960,7 +954,8 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 ]
 
             if valid_p:
-                valid_p.sort(key=lambda x: str(x.get("std_date", "")), reverse=True)
+                # 작업일 이하 매입건들 중 가장 최신일(내림차순 정렬 1번째)
+                valid_p.sort(key=lambda x: (str(x.get("std_date", "")), str(x.get("mmdd", ""))), reverse=True)
                 code_purchase = valid_p[0]["code"]
                 ymd = valid_p[0]["yymmdd"]
                 purch_source_desc = f"{ymd[2:4]}/{ymd[4:]} 매입 참조"
@@ -1001,7 +996,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         rec["일치여부"] = is_match
         final_rows.append(rec)
 
-        # Tab 3의 원료코드 생성 목록에 프릴아이스도 추가 등록
         if is_frill and (prod_date, code_purchase) not in frill_summary_added and rec.get("실투입량(전)", 0) > 0:
             frill_summary_added.add((prod_date, code_purchase))
             code_summary_rows.append({
