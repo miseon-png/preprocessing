@@ -342,8 +342,8 @@ def render_process_log_html(date_str, df_target, is_completed=False):
         <table class="main-table">
             <tr class="bg-gray">
                 <td colspan="2">작성일자</td>
-                <td colspan="2" style="background-color: #fff;">{yyyy} 년     {mm} 월     {dd} 일</td>
-                <td colspan="2" style="background-color: #fff;">   :          ~          :   </td>
+                <td colspan="2" style="background-color: #fff;">{yyyy} 년     {mm} 월     {dd} 일</td>
+                <td colspan="2" style="background-color: #fff;">   :          ~          :   </td>
                 <td>작성자</td>
                 <td colspan="2" style="background-color: #fff;"></td>
             </tr>
@@ -482,7 +482,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
     stock_sheet = find_stock_sheet_name(xls)
     df_raw = pd.read_excel(xls, sheet_name=stock_sheet, header=None)
 
-    # [수정] 마이너스 부호(-)를 보존하여 반품 음수 입고를 정상 차감 반영
     def parse_cell(val):
         if pd.isna(val): return 0.0
         try:
@@ -560,7 +559,6 @@ def parse_and_convert_to_standard_ledger(excel_file):
         yymmdd = g["yymmdd"]
         mmdd_str = f"{yymmdd[2:4]}/{yymmdd[4:]}"
 
-        # 순입고량이 0보다 큰 경우에만 소진 큐에 정상 등록
         if g["y_in"] > 0: item_queues["yangsangchu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["y_in"], "vendor": "K01"})
         if g["b_in"] > 0: item_queues["yangbaechu"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["b_in"], "vendor": "K01"})
         if g["j_in"] > 0: item_queues["jeokchae"].append({"yymmdd": yymmdd, "label": f"{mmdd_str} 매입", "avail": g["j_in"], "vendor": "K01"})
@@ -750,7 +748,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         type_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["구분", "유형", "상태", "비고"])), None)
 
         if date_col and item_col:
-            # [수정] (품목, 입고일자, 원료코드) 단위로 순입고량(입고 - 반품)을 합산하여 유효 입고건만 추출
             lot_quantities = {}
             lot_meta = {}
 
@@ -765,13 +762,13 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw)
                 p_std_dt = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
 
+                # [수정] 프릴 또는 프릴아이스는 동일하게 '프릴아이스'로 표준화
                 if "양상추" in p_item_raw: p_item = "양상추"
                 elif "양배추" in p_item_raw: p_item = "양배추"
                 elif "적채" in p_item_raw: p_item = "적채"
                 elif "프릴" in p_item_raw: p_item = "프릴아이스"
                 else: p_item = p_item_raw
 
-                # 수량 추출
                 qty = 1.0
                 if qty_col and pd.notna(c_row[qty_col]):
                     try:
@@ -781,12 +778,11 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     except ValueError:
                         qty = 1.0
 
-                # '구분/비고' 컬럼에 반품 표시가 있거나 수량이 음수인 경우 차감 처리
                 type_val = str(c_row[type_col]) if type_col and pd.notna(c_row[type_col]) else ""
                 if "반품" in type_val or "취소" in type_val:
                     qty = -abs(qty)
 
-                pref = prefix_map.get(p_item, prefix_map.get("프릴" if "프릴" in p_item else "양상추", "X"))
+                pref = prefix_map.get(p_item, "F" if "프릴" in p_item else "X")
                 v_code = vendor_code_map.get(p_vendor_raw, "K01")
                 p_code = f"{pref}{p_yymmdd}-{v_code}"
 
@@ -802,7 +798,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                         "vendor": p_vendor_raw
                     }
 
-            # 전량 반품되지 않고 순입고량이 0보다 큰 유효 롯트만 후보군으로 등록
             for lot_key, net_qty in lot_quantities.items():
                 if net_qty > 0:
                     purchase_records.append(lot_meta[lot_key])
@@ -909,23 +904,39 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         
         is_frill = "프릴" in raw_item
 
+        # [수정] 프릴 또는 프릴아이스는 무조건 '프릴아이스'로 lookup_item 통일
         if "양상추" in raw_item: lookup_item = "양상추"
         elif "양배추" in raw_item: lookup_item = "양배추"
         elif "적채" in raw_item: lookup_item = "적채"
         elif is_frill: lookup_item = "프릴아이스"
         else: lookup_item = raw_item.strip()
 
-        p = prefix_map.get(lookup_item, prefix_map.get("프릴" if is_frill else "양상추", "X"))
+        p = prefix_map.get(lookup_item, "F" if is_frill else "X")
 
         code_subul = "-"
         if not is_frill:
             code_subul = code_summary_map.get((prod_date, lookup_item), "-")
 
+        # [수정 핵심] 프릴/프릴아이스 등 매입기준 코드 추출 시 최근 매입일 우선 탐색
         code_purchase = "-"
         if has_csv:
-            valid_p = [pr for pr in purchase_records if pr["item"] == lookup_item and pr["std_date"] <= prod_date]
+            # 1. 생산일 이하의 해당 품목 매입 내역 추출
+            valid_p = [
+                pr for pr in purchase_records 
+                if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"])) 
+                and pr["std_date"] <= prod_date
+            ]
+            
+            # 2. 만약 매입 전표가 당일보다 미래 일자로 입력되어 있거나 생산일 이전 매입이 없으면 전체 매입 내역에서 탐색
+            if not valid_p:
+                valid_p = [
+                    pr for pr in purchase_records 
+                    if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"]))
+                ]
+
             if valid_p:
-                valid_p.sort(key=lambda x: x["std_date"], reverse=True)
+                # yymmdd 및 std_date 기준 내림차순(최신순) 정렬하여 가장 최근 입고코드 선택
+                valid_p.sort(key=lambda x: (str(x.get("std_date", "")), str(x.get("yymmdd", ""))), reverse=True)
                 code_purchase = valid_p[0]["code"]
 
         if rec["제품명"] == "크라이 컷레터스":
@@ -943,8 +954,10 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                     is_match = "일치"
                 elif code_worklog == "없음":
                     is_match = "불일치(작업일지 미기재)"
+                elif code_purchase == "-":
+                    is_match = "불일치(매입내역 없음)"
                 else:
-                    is_match = "불일치(수불부 대상 제외 품목)"
+                    is_match = "불일치(매입자료와 상이)"
             else:
                 if code_worklog != "없음" and code_subul != "-" and code_worklog in code_subul:
                     is_match = "일치"
@@ -955,7 +968,10 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 else:
                     is_match = "불일치(혼합/추측)"
 
-        rec["작업일지 기준 코드"], rec["수불부 기준 코드"], rec["매입자료 기준 코드"], rec["일치여부"] = code_worklog, code_subul, code_purchase, is_match
+        rec["작업일지 기준 코드"] = code_worklog
+        rec["수불부 기준 코드"] = code_subul
+        rec["매입자료 기준 코드"] = code_purchase
+        rec["일치여부"] = is_match
         final_rows.append(rec)
 
     df_report = pd.DataFrame(final_rows)
@@ -1030,7 +1046,6 @@ if excel_file is not None:
             
             st.dataframe(df_preview, use_container_width=True)
 
-            # 구글 시트 연동 버튼
             st.markdown("---")
             st.subheader("☁️ 메인 수불부 구글 시트로 출고량 연동 (지정 기간 덮어쓰기)")
             st.info("💡 선택한 기간의 엑셀 데이터만 전송됩니다. 해당 기간 내 시트의 기존 '시스템자동' 데이터는 지워지고 최신 데이터로 덮어씌워집니다. (수기 입력 데이터는 보존됨)")
