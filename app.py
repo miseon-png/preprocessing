@@ -733,7 +733,7 @@ def parse_csv_purchase(uploaded_file):
             return pd.concat(df_dict.values(), ignore_index=True)
         except Exception: return pd.DataFrame()
 
-    encodings = ["utf-8-sig", "cp949", "euc-kr", "utf-8", "latin1"]
+    encodings = ["utf-8-sig", "utf-8", "cp949", "euc-kr", "latin1"]
     for enc in encodings:
         try:
             uploaded_file.seek(0)
@@ -747,9 +747,6 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
     has_csv = not df_csv.empty
 
-    # 생산일지 기준 연도 추출 (매입일자 연도 보정용)
-    first_prod_year = datetime.now().strftime("%y")
-
     exclude_sheets = ["테스트", "원가", stock_sheet_name, "Sheet1", "sheet1"]
     daily_sheets = [
         s for s in xls.sheet_names 
@@ -757,6 +754,8 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
     ]
 
     records = []
+    first_prod_year = None
+
     for sheet in daily_sheets:
         try:
             df_s = pd.read_excel(excel_file, sheet_name=sheet, header=None)
@@ -790,7 +789,8 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 has_lot = (lot_str != "" and lot_str.lower() != "nan" and lot_str.lower() != "none")
                 
                 yy_p, prod_yymmdd, _ = extract_yymmdd_and_mmdd(prod_date)
-                first_prod_year = yy_p
+                if first_prod_year is None:
+                    first_prod_year = yy_p
                 formatted_prod_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
 
                 records.append({
@@ -834,13 +834,13 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
         except Exception: continue
 
-    # 매입자료 파싱 (컬럼명 탐색 범위 확장)
+    # 매입자료 파싱 (업로드 파일 기반으로 정밀 매핑)
     purchase_records = []
     if has_csv:
         date_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["기간", "일자", "날짜", "입고일", "일시"])), None)
         item_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["품명", "품목", "원재료", "상품명", "자재명"])), None)
         vendor_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["거래처", "매입처", "공급처", "공급업체", "업체명"])), None)
-        qty_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["수량", "중량", "입고량", "수량(kg)"])), None)
+        qty_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["수량", "중량", "입고량", "중량 (kg)"])), None)
         type_col = next((c for c in df_csv.columns if any(k in str(c) for k in ["구분", "유형", "상태", "비고"])), None)
 
         if date_col and item_col:
@@ -855,6 +855,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 if pd.isna(p_date_raw) or not p_item_raw or p_item_raw == "nan": continue
                 if p_vendor_raw == "기타": continue
 
+                # 날짜 파싱 (연도 보존)
                 _, p_yymmdd, _ = extract_yymmdd_and_mmdd(p_date_raw, fallback_year=first_prod_year)
                 p_std_dt = f"20{p_yymmdd[:2]}-{p_yymmdd[2:4]}-{p_yymmdd[4:]}"
 
@@ -906,10 +907,23 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         c_code = r.get("생성코드", "-")
         code_summary_map[(std_dt, item)] = c_code
 
-    if not records: return pd.DataFrame()
+    if not records: return pd.DataFrame(), code_summary_rows
     records.sort(key=lambda x: x["prod_yymmdd"])
 
+    # 생산일지 연도와 매입 연도 일치 보정 (24년 vs 26년 불일치 방지)
+    if purchase_records and records:
+        sample_prod_year = records[0]["prod_yymmdd"][:2]
+        sample_purch_year = purchase_records[0]["yymmdd"][:2]
+        if sample_prod_year != sample_purch_year:
+            for rec in records:
+                # 매입 연도와 동일하게 맞춰서 비교
+                mmdd = rec["prod_yymmdd"][2:]
+                rec["prod_yymmdd"] = f"{sample_purch_year}{mmdd}"
+                rec["생산일자"] = f"20{sample_purch_year}-{mmdd[:2]}-{mmdd[2:]}"
+
     final_rows = []
+    frill_summary_added = set()
+
     for rec in records:
         raw_item, lot, has_lot = rec["품목"], rec["작업일지_롯트"], rec["has_lot"]
         prod_date, prod_yymmdd = rec["생산일자"], rec["prod_yymmdd"]
@@ -930,6 +944,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
 
         # 기준일(생산일자) 당일 및 이전 매입건 중 가장 최근 매입일 코드 취득
         code_purchase = "-"
+        purch_source_desc = "-"
         if has_csv:
             valid_p = [
                 pr for pr in purchase_records 
@@ -937,9 +952,18 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
                 and pr["std_date"] <= prod_date
             ]
             
+            # 만약 기준일 이전 매입이 없으면 전체 매입 중 가장 빠른/가까운 건 매칭 (안전장치)
+            if not valid_p:
+                valid_p = [
+                    pr for pr in purchase_records 
+                    if (pr["item"] == lookup_item or (is_frill and "프릴" in pr["item"]))
+                ]
+
             if valid_p:
                 valid_p.sort(key=lambda x: str(x.get("std_date", "")), reverse=True)
                 code_purchase = valid_p[0]["code"]
+                ymd = valid_p[0]["yymmdd"]
+                purch_source_desc = f"{ymd[2:4]}/{ymd[4:]} 매입 참조"
 
         if rec["제품명"] == "크라이 컷레터스":
             code_worklog = code_subul
@@ -947,7 +971,7 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         else:
             if has_lot:
                 _, yymmdd_worklog, _ = extract_yymmdd_and_mmdd(lot, fallback_year=prod_yymmdd[:2])
-                v_code_worklog = "K01"
+                v_code_worklog = "H02" if is_frill else "K01"
                 code_worklog = f"{p}{yymmdd_worklog}-{v_code_worklog}" if yymmdd_worklog else "없음"
             else: 
                 code_worklog = "없음"
@@ -977,8 +1001,21 @@ def generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_n
         rec["일치여부"] = is_match
         final_rows.append(rec)
 
+        # Tab 3의 원료코드 생성 목록에 프릴아이스도 추가 등록
+        if is_frill and (prod_date, code_purchase) not in frill_summary_added and rec.get("실투입량(전)", 0) > 0:
+            frill_summary_added.add((prod_date, code_purchase))
+            code_summary_rows.append({
+                "날짜": prod_date,
+                "원재료": "프릴아이스",
+                "생성코드": code_purchase,
+                "투입량(kg)": rec.get("실투입량(전)", 0.0),
+                "준비량(kg)": rec.get("준비양(후)", 0.0),
+                "소진매입일(상세)": purch_source_desc,
+                "비고": "매입참조"
+            })
+
     df_report = pd.DataFrame(final_rows)
-    return df_report[["생산일자", "제품명", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]]
+    return df_report[["생산일자", "제품명", "품목", "작업일지 기준 코드", "수불부 기준 코드", "매입자료 기준 코드", "일치여부", "실투입량(전)", "준비양(후)"]], code_summary_rows
 
 # ---------------------------------------------------------
 # Streamlit 화면 구성 (6개 탭)
@@ -995,7 +1032,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 if excel_file is not None:
     try:
         excel_bytes, standard_rows, code_summary_rows, stock_sheet_name, final_lots = parse_and_convert_to_standard_ledger(excel_file)
-        df_result = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
+        df_result, updated_code_summary = generate_salad_report(excel_file, csv_file, code_summary_rows, stock_sheet_name)
 
         # --- Tab 1: 원료코드 대조표 ---
         with tab1:
@@ -1034,7 +1071,7 @@ if excel_file is not None:
             korean_column_map = {
                 "date": "일자",
                 "yangsangchu_in": "양상추_입고량(kg)", "yangsangchu_use": "양상추_투입량(kg)", "yangsangchu_source": "양상추_소진 매입일자(상세)", "yangsangchu_stock": "양상추_기말재고(kg)",
-                "yangbaechu_in": "양배추_입고량(kg)", "yangbaechu_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yang배추_기말재고": "양배추_기말재고(kg)",
+                "yangbaechu_in": "양배추_입고량(kg)", "yangbaechu_use": "양배추_투입량(kg)", "yangbaechu_source": "양배추_소진 매입일자(상세)", "yangbaechu_stock": "양배추_기말재고(kg)",
                 "jeokchae_in": "적채_입고량(kg)", "jeokchae_use": "적채_투입량(kg)", "jeokchae_source": "적채_소진 매입일자(상세)", "jeokchae_stock": "적채_기말재고(kg)",
                 "note": "비고",
             }
@@ -1123,12 +1160,12 @@ if excel_file is not None:
         # --- Tab 3: 원료코드 생성 및 일자별 정리 ---
         with tab3:
             st.subheader("🏷️ 소진 매입재고 기반 일자별 원료코드 생성 결과")
-            df_code_summary = pd.DataFrame(code_summary_rows)
+            df_code_summary = pd.DataFrame(updated_code_summary)
             if not df_code_summary.empty:
                 column_order = ["날짜", "원재료", "생성코드", "투입량(kg)", "준비량(kg)", "소진매입일(상세)", "비고"]
                 df_code_summary = df_code_summary[[c for c in column_order if c in df_code_summary.columns]]
 
-                item_priority = {"양상추": 1, "양배추": 2, "적채": 3}
+                item_priority = {"양상추": 1, "양배추": 2, "적채": 3, "프릴아이스": 4}
                 df_code_summary["_sort_key"] = df_code_summary["원재료"].map(lambda x: item_priority.get(x, 99))
                 df_code_summary = df_code_summary.sort_values(by=["날짜", "_sort_key"]).drop(columns=["_sort_key"])
 
